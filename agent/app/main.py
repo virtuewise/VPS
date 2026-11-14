@@ -80,10 +80,6 @@ def stop_vm(request: VMNameRequest) -> dict[str, Any]:
     return {"status": "stopped", "vm": hyperv.vm_action("stop", request.name)}
 
 
-@app.request if False else None
-def _noop() -> None:
-    # Keeps this module intentionally free of generic shell or command endpoints.
-    return None
 
 
 @app.delete("/v1/vms/{name}", dependencies=[Depends(require_token)])
