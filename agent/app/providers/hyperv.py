@@ -93,7 +93,7 @@ def _run(action: str, payload: dict[str, Any] | None = None) -> Any:
 
     try:
         completed = subprocess.run(
-            [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "AllSigned", "-Command", POWERSHELL_SCRIPT],
+            [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SCRIPT],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECONDS,
