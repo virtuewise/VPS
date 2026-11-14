@@ -13,9 +13,13 @@
 - [x] Bearer-token protected typed API
 - [x] VM create/list/start/stop/delete operations
 - [x] Resource bounds for CPU, memory, and disk
+- [x] Control-plane proxy endpoints for a configured local agent
+- [x] Dashboard agent health and VM inventory
+- [x] Dashboard VM start/stop controls
+- [x] Normalize Hyper-V inventory fields for the dashboard
 - [ ] Validate on a supported Windows 11 Hyper-V host
-- [ ] Integrate node enrollment and VM inventory into control plane
 - [ ] Add lifecycle state reconciliation and audit log
+- [ ] Secure multi-node enrollment, TLS, and user authorization
 
 ## Milestone 3 — Linux provider and secure node enrollment
 
