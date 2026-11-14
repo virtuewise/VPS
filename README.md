@@ -71,4 +71,4 @@ The software is intended to be free and open source. Running real VPS instances 
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
