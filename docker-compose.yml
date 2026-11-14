@@ -1,0 +1,16 @@
+services:
+  api:
+    build:
+      context: ./backend
+    container_name: virtuewise-vps-api
+    ports:
+      - "8000:8000"
+    environment:
+      VPS_DATABASE_PATH: /data/virtuewise-vps.db
+      VPS_ENV: development
+    volumes:
+      - vps-data:/data
+    restart: unless-stopped
+
+volumes:
+  vps-data:
