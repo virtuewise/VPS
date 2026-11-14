@@ -118,11 +118,26 @@ def _run(action: str, payload: dict[str, Any] | None = None) -> Any:
 
 
 def list_vms() -> list[dict[str, Any]]:
-    return _run("list") or []
+    rows = _run("list") or []
+    return [
+        {
+            "name": row.get("Name"),
+            "state": row.get("State"),
+            "cpu_usage": row.get("CPUUsage"),
+            "memory_assigned_mb": round(int(row.get("MemoryAssigned") or 0) / (1024 * 1024)),
+            "uptime": row.get("Uptime"),
+            "id": row.get("Id"),
+        }
+        for row in rows
+    ]
 
 
 def list_switches() -> list[dict[str, Any]]:
-    return _run("switches") or []
+    rows = _run("switches") or []
+    return [
+        {"name": row.get("Name"), "switch_type": row.get("SwitchType")}
+        for row in rows
+    ]
 
 
 def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_path: str, switch_name: str | None) -> Any:
