@@ -7,6 +7,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      VPS_APP_ROOT: /app
       VPS_DATABASE_PATH: /data/virtuewise-vps.db
       VPS_ENV: development
     volumes:
