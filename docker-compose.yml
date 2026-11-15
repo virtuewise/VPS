@@ -10,6 +10,9 @@ services:
       VPS_APP_ROOT: /app
       VPS_DATABASE_PATH: /data/virtuewise-vps.db
       VPS_ENV: development
+      VPS_ADMIN_PASSWORD: ${VPS_ADMIN_PASSWORD:?Set VPS_ADMIN_PASSWORD in your .env file}
+      VPS_SESSION_SECRET: ${VPS_SESSION_SECRET:?Set VPS_SESSION_SECRET in your .env file}
+      VPS_SESSION_COOKIE_SECURE: ${VPS_SESSION_COOKIE_SECURE:-false}
       # Agent connection is intentionally opt-in. See docs/CONTROL-PLANE-AGENT.md.
       VPS_AGENT_URL: ${VPS_AGENT_URL:-}
       VPS_AGENT_TOKEN: ${VPS_AGENT_TOKEN:-}
