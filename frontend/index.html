@@ -27,8 +27,23 @@
       <article class="metric"><span class="metric-label">COMPUTE NODES</span><strong id="node-count">0</strong><small>Registered nodes</small></article>
       <article class="metric"><span class="metric-label">HYPER-V AGENT</span><strong id="agent-status" class="offline">Offline</strong><small id="api-status">Checking API…</small></article>
     </section>
+    <section class="panel" id="create-instance">
+      <div class="panel-heading"><div><h3>Create a virtual machine</h3><p class="muted">Provision a Generation 2 Hyper-V VM from an ISO on the Windows host.</p></div><span class="tag">HYPER-V</span></div>
+      <form id="create-vm-form" class="create-form">
+        <div class="form-grid">
+          <label>VM name<input name="name" type="text" minlength="3" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9-]*" placeholder="e.g. ubuntu-test" required></label>
+          <label>Installer ISO path<input name="iso_path" type="text" minlength="5" maxlength="260" placeholder="C:\\ISO\\ubuntu-server.iso" required></label>
+          <label>Memory (MB)<input name="memory_mb" type="number" min="512" max="32768" step="512" value="2048" required></label>
+          <label>Virtual disk (GB)<input name="disk_gb" type="number" min="8" max="500" step="1" value="20" required></label>
+          <label>Virtual CPUs<input name="cpu_count" type="number" min="1" max="16" step="1" value="2" required></label>
+          <label>Virtual switch<select name="switch_name" id="switch-select"><option value="">No switch (disconnected)</option></select></label>
+        </div>
+        <p class="form-help">The ISO path must exist on the Windows Hyper-V host. The new VM is created powered off; start it from the inventory below. Choose a switch only if you understand its network exposure.</p>
+        <div class="form-actions"><button id="create-vm-button" type="submit" disabled>Create VM</button><span id="create-vm-status" class="muted">Connect the local agent to enable provisioning.</span></div>
+      </form>
+    </section>
     <section class="panel" id="instances">
-      <div class="panel-heading"><div><h3>Virtual machines</h3><p class="muted">Inventory reported by the connected Hyper-V node.</p></div><button id="refresh-button" class="secondary">Refresh</button></div>
+      <div class="panel-heading"><div><h3>Virtual machines</h3><p class="muted">Inventory reported by the connected Hyper-V node.</p></div><button id="refresh-button" class="secondary" type="button">Refresh</button></div>
       <div id="vm-content" class="empty"><div class="empty-icon">▣</div><b>Agent connection not configured</b><p class="muted">Configure the API's agent URL and token to load virtual machines.</p></div>
     </section>
     <section class="panel" id="nodes">
