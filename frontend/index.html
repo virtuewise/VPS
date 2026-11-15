@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
+  <div id="login-gate" class="login-gate" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand"><span class="brand-mark">V</span><span>VirtueWise <b>VPS</b></span></div>
+      <h1>Administrator sign in</h1>
+      <p class="muted">Sign in to manage your virtual machines and compute nodes.</p>
+      <label for="admin-password">Administrator password</label>
+      <input id="admin-password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button id="login-button" type="submit">Sign in</button>
+      <p id="login-error" class="login-error" role="alert"></p>
+    </form>
+  </div>
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark">V</span><span>VirtueWise <b>VPS</b></span></div>
     <p class="nav-label">PLATFORM</p>
@@ -17,7 +28,7 @@
     <div class="sidebar-bottom"><span class="status-dot"></span> Local development</div>
   </aside>
   <main class="main">
-    <header class="topbar"><div><span class="eyebrow">CONTROL PANEL</span><h1>Overview</h1></div><span class="env-pill">● DEVELOPMENT</span></header>
+    <header class="topbar"><div><span class="eyebrow">CONTROL PANEL</span><h1>Overview</h1></div><div class="topbar-actions"><span class="env-pill">● DEVELOPMENT</span><button id="logout-button" class="secondary" type="button">Sign out</button></div></header>
     <section class="welcome">
       <div><p class="eyebrow">YOUR INFRASTRUCTURE, YOUR RULES</p><h2>Welcome to VirtueWise VPS</h2><p class="muted">Manage your local Hyper-V development node from one place.</p></div>
       <div class="welcome-icon">⌘</div>
