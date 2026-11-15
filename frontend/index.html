@@ -38,9 +38,23 @@
           <label>Virtual CPUs<input name="cpu_count" type="number" min="1" max="16" step="1" value="2" required></label>
           <label>Virtual switch<select name="switch_name" id="switch-select"><option value="">No switch (disconnected)</option></select></label>
         </div>
+        <div class="cloud-init-fields">
+          <h4>Automatic Ubuntu Server install (optional)</h4>
+          <p class="form-help">Provide all three values to attach a NoCloud cloud-init seed. Install oscdimg.exe from the Windows ADK Deployment Tools and configure VPS_OSCDIMG on the agent.</p>
+          <div class="form-grid">
+            <label>Linux username<input name="linux_username" type="text" pattern="[a-z_][a-z0-9_-]{0,31}" placeholder="ubuntu"></label>
+            <label>SHA-512 password hash<input name="password_hash" type="password" autocomplete="new-password" placeholder="$6$..."></label>
+            <label class="wide-field">SSH public key<input name="ssh_public_key" type="text" placeholder="ssh-ed25519 AAAAC3... user@device"></label>
+          </div>
+          <p class="form-help">Password hash only; plain-text passwords are never accepted or stored. Generate one with a trusted SHA-512 crypt tool. SSH password login is disabled in the guest.</p>
+        </div>
         <p class="form-help">The ISO path must exist on the Windows Hyper-V host. The new VM is created powered off; start it from the inventory below. Choose a switch only if you understand its network exposure.</p>
         <div class="form-actions"><button id="create-vm-button" type="submit" disabled>Create VM</button><span id="create-vm-status" class="muted">Connect the local agent to enable provisioning.</span></div>
       </form>
+    </section>
+    <section class="panel" id="resource-monitor">
+      <div class="panel-heading"><div><h3>Node resources</h3><p class="muted">Host CPU, memory and VM storage volume usage.</p></div><button id="monitor-refresh" class="secondary" type="button">Refresh metrics</button></div>
+      <div id="monitor-content" class="resource-grid"><div class="empty">Waiting for node metrics…</div></div>
     </section>
     <section class="panel" id="instances">
       <div class="panel-heading"><div><h3>Virtual machines</h3><p class="muted">Inventory reported by the connected Hyper-V node.</p></div><button id="refresh-button" class="secondary" type="button">Refresh</button></div>
