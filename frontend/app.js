@@ -8,6 +8,10 @@ async function api(path, options = {}) {
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers["X-CSRF-Token"] = csrfToken;
   const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    csrfToken = "";
+    byId("login-gate").hidden = false;
+  }
   if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
   return data;
 }
@@ -73,7 +77,30 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   const summary=`${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
   if(!confirm(`Create this VM?\n\n${summary}\nCloud-init: ${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.`))return;
   const button=byId("create-vm-button");button.disabled=true;byId("create-vm-status").textContent="Creating VM…";notice("");
-  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await async function bootstrapAuth() {
+  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
+  catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
+});
+byId("refresh-button").addEventListener("click",loadDashboard);
+byId("monitor-refresh").addEventListener("click",loadMonitor);
+byId("vm-content").addEventListener("click",async event=>{
+  const button=event.target.closest("button[data-action]");if(!button)return;
+  const {action,name}=button.dataset;
+  if(action==="stop"&&!confirm(`Gracefully shut down VM "${name}"?`))return;
+  if(action==="delete"){
+    if(prompt(`Type the exact VM name "${name}" to remove the VM (its virtual disks will be retained):`)!==name)return;
+    const removeDisks=confirm("Also permanently delete this VM's managed virtual disk files? This cannot be undone. Choose Cancel to retain disks.");
+    if(removeDisks&&prompt("Type DELETE DISKS to confirm permanent disk removal:")!=="DELETE DISKS")return;
+    button.disabled=true;
+    try{await api(`/api/vms/${encodeURIComponent(name)}?confirm_name=${encodeURIComponent(name)}&delete_disks=${removeDisks}`,{method:"DELETE"});notice(`VM ${name} removed. ${removeDisks?"Managed disks deleted where safe.":"Virtual disks retained."}`);await loadDashboard();}
+    catch(error){notice(error.message);button.disabled=false;}return;
+  }
+  button.disabled=true;
+  try{
+    if(action==="console"){await api(`/api/vms/${encodeURIComponent(name)}/console`,{method:"POST"});notice("Hyper-V console launch requested on the Windows node. The console window opens on that machine.");}
+    else{await api(`/api/vms/${encodeURIComponent(name)}/${action}`,{method:"POST"});notice(`VM ${name}: ${action} request completed.`);await loadDashboard();}
+  }catch(error){notice(error.message);button.disabled=false;}
+});
+async function bootstrapAuth() {
   try {
     const session = await api("/api/auth/session");
     if (!session.authenticated) {
@@ -114,27 +141,4 @@ byId("logout-button").addEventListener("click", async () => {
   byId("admin-password").focus();
   byId("api-status").textContent = "Signed out";
 });
-bootstrapAuth();}
-  catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
-});
-byId("refresh-button").addEventListener("click",loadDashboard);
-byId("monitor-refresh").addEventListener("click",loadMonitor);
-byId("vm-content").addEventListener("click",async event=>{
-  const button=event.target.closest("button[data-action]");if(!button)return;
-  const {action,name}=button.dataset;
-  if(action==="stop"&&!confirm(`Gracefully shut down VM "${name}"?`))return;
-  if(action==="delete"){
-    if(prompt(`Type the exact VM name "${name}" to remove the VM (its virtual disks will be retained):`)!==name)return;
-    const removeDisks=confirm("Also permanently delete this VM's managed virtual disk files? This cannot be undone. Choose Cancel to retain disks.");
-    if(removeDisks&&prompt("Type DELETE DISKS to confirm permanent disk removal:")!=="DELETE DISKS")return;
-    button.disabled=true;
-    try{await api(`/api/vms/${encodeURIComponent(name)}?confirm_name=${encodeURIComponent(name)}&delete_disks=${removeDisks}`,{method:"DELETE"});notice(`VM ${name} removed. ${removeDisks?"Managed disks deleted where safe.":"Virtual disks retained."}`);await loadDashboard();}
-    catch(error){notice(error.message);button.disabled=false;}return;
-  }
-  button.disabled=true;
-  try{
-    if(action==="console"){await api(`/api/vms/${encodeURIComponent(name)}/console`,{method:"POST"});notice("Hyper-V console launch requested on the Windows node. The console window opens on that machine.");}
-    else{await api(`/api/vms/${encodeURIComponent(name)}/${action}`,{method:"POST"});notice(`VM ${name}: ${action} request completed.`);await loadDashboard();}
-  }catch(error){notice(error.message);button.disabled=false;}
-});
-loadDashboard();
+bootstrapAuth();
