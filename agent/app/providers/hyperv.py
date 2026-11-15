@@ -184,7 +184,7 @@ autoinstall:
     install-server: true
     allow-pw: false
     authorized-keys:
-      - {key}
+      - {json.dumps(key)}
   packages:
     - qemu-guest-agent
   late-commands:
