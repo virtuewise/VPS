@@ -7,6 +7,7 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 ## Current capabilities
 
 - FastAPI control-plane API and lightweight dashboard
+- Administrator password login with signed, expiring sessions, HttpOnly cookies and CSRF checks on state-changing API requests
 - SQLite metadata store and Docker Compose development setup
 - Windows Hyper-V agent with bearer-token authentication and allow-listed VM operations
 - Dashboard agent health, VM inventory and VM start/stop/create actions
@@ -31,9 +32,12 @@ Windows 11 Home does not support this Hyper-V provider. You can still develop th
 
     git clone https://github.com/virtuewise/VPS.git
     cd VPS
+    Copy-Item .env.example .env
+    # Edit .env and set a unique VPS_ADMIN_PASSWORD and a random VPS_SESSION_SECRET
+    py -c "import secrets; print(secrets.token_hex(32))"
     docker compose up --build
 
-Open the dashboard at http://localhost:8000. Stop with Ctrl+C or run docker compose down.
+Open the dashboard at http://localhost:8000 and sign in with the password configured as VPS_ADMIN_PASSWORD in .env. Stop with Ctrl+C or run docker compose down.
 
 ## Connect a local Windows Hyper-V node
 
@@ -44,7 +48,9 @@ See docs/HYPERV-ADVANCED-FEATURES.md for console, cloud-init, SSH, network repor
 ## Security and limitations
 
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
-- Remote agent connections require HTTPS; secure enrollment, mutual TLS, user authentication, authorization, audit logging and a security review remain outstanding.
+- The dashboard now requires a configured administrator password and session-signing secret. This is single-admin authentication, not multi-user roles or tenant isolation.
+- The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
+- Remote agent connections require HTTPS; secure enrollment, mutual TLS, role-based authorization, audit logging and a security review remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
 - Cloud-init requires a compatible Ubuntu Server ISO and Windows ADK oscdimg.exe. Test unattended installation in a disposable VM first.
 - Guest IP reporting depends on Hyper-V integration services and guest network configuration.
