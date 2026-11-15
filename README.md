@@ -11,6 +11,7 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 - Windows Hyper-V agent with bearer-token authentication and allow-listed VM operations
 - Dashboard agent health and VM inventory when connected
 - Dashboard VM start/stop actions
+- Dashboard VM creation form with CPU, RAM, disk, ISO, and optional virtual-switch settings
 - Control-plane API proxy for VM create/list/start/stop/delete and virtual-switch inventory
 
 ## Development prerequisites
@@ -69,7 +70,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for milestones and current completion sta
 
 ## Cost and hardware expectations
 
-The software is intended to be free and open source. Running real VPS instances still requires available CPU, RAM, storage, networking, and electricity. A laptop can run the development control plane; reliable public hosting requires suitable always-on hardware and network connectivity.
+The software is intended to be free and open source. The current VM creation workflow is a local development feature, not a secure public hosting service. Running real VPS instances still requires available CPU, RAM, storage, networking, and electricity. A laptop can run the development control plane; reliable public hosting requires suitable always-on hardware and network connectivity.
 
 ## License
 
