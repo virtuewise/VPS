@@ -16,6 +16,7 @@
 - [x] Control-plane proxy endpoints for a configured local agent
 - [x] Dashboard agent health and VM inventory
 - [x] Dashboard VM start/stop controls
+- [x] Dashboard VM creation form with resource bounds, ISO path, and optional virtual switch
 - [x] Normalize Hyper-V inventory fields for the dashboard
 - [ ] Validate on a supported Windows 11 Hyper-V host
 - [ ] Add lifecycle state reconciliation and audit log
