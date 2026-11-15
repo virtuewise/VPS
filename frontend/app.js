@@ -4,7 +4,7 @@ const notice = message => { byId("notice").textContent = message; };
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || \`Request failed (\${response.status})\`);
+  if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
   return data;
 }
 function escapeHtml(value) {
@@ -17,7 +17,7 @@ function setCreateEnabled(enabled) {
 async function loadSwitches() {
   const select = byId("switch-select"), selected = select.value, result = await api("/api/switches");
   select.replaceChildren(new Option("No switch (disconnected)", ""));
-  for (const item of result.items || []) select.add(new Option(\`\${item.name} — \${item.switch_type || "virtual switch"}\`, item.name));
+  for (const item of result.items || []) select.add(new Option(`${item.name} — ${item.switch_type || "virtual switch"}`, item.name));
   if ([...select.options].some(option => option.value === selected)) select.value = selected;
 }
 function renderVMs(items) {
@@ -28,9 +28,9 @@ function renderVMs(items) {
   content.className="vm-list";
   content.innerHTML=items.map(vm=>{
     const name=escapeHtml(vm.name), state=escapeHtml(vm.state||"Unknown"), running=String(vm.state||"").toLowerCase()==="running";
-    const net=(vm.network||[]).flatMap(n=>(n.ip_addresses||[]).map(ip=>\`\${escapeHtml(ip)} (\${escapeHtml(n.switch_name||"unattached")})\`));
+    const net=(vm.network||[]).flatMap(n=>(n.ip_addresses||[]).map(ip=>`${escapeHtml(ip)} (${escapeHtml(n.switch_name||"unattached")})`));
     const netText=net.length?net.join(", "):"No guest IP reported yet";
-    return \`<div class="vm-row vm-row-expanded"><div class="vm-ident"><b>\${name}</b><span class="muted">CPU \${escapeHtml(vm.cpu_usage??"—")}% · \${Number(vm.memory_assigned_mb||0)} MB assigned</span><span class="muted">Network: \${netText}</span></div><span class="state \${running?"running":""}">\${state}</span><div class="vm-actions"><button class="secondary" data-action="console" data-name="\${name}" \${running?"":"disabled"}>Console</button><button class="secondary" data-action="\${running?"stop":"start"}" data-name="\${name}">\${running?"Stop":"Start"}</button><button class="danger" data-action="delete" data-name="\${name}">Delete</button></div></div>\`;
+    return `<div class="vm-row vm-row-expanded"><div class="vm-ident"><b>${name}</b><span class="muted">CPU ${escapeHtml(vm.cpu_usage??"—")}% · ${Number(vm.memory_assigned_mb||0)} MB assigned</span><span class="muted">Network: ${netText}</span></div><span class="state ${running?"running":""}">${state}</span><div class="vm-actions"><button class="secondary" data-action="console" data-name="${name}" ${running?"":"disabled"}>Console</button><button class="secondary" data-action="${running?"stop":"start"}" data-name="${name}">${running?"Stop":"Start"}</button><button class="danger" data-action="delete" data-name="${name}">Delete</button></div></div>`;
   }).join("");
 }
 async function loadMonitor() {
@@ -39,12 +39,12 @@ async function loadMonitor() {
     const m=await api("/api/monitor");
     const memUsed=Math.max(0,m.memory_total_mb-m.memory_free_mb), storageUsed=Math.max(0,m.storage_total_gb-m.storage_free_gb);
     const metrics=[
-      ["Host CPU",\`\${m.cpu_percent}%\`,m.cpu_percent],
-      ["Memory",\`\${(memUsed/1024).toFixed(1)} / \${(m.memory_total_mb/1024).toFixed(1)} GB\`,m.memory_total_mb?memUsed/m.memory_total_mb*100:0],
-      ["VM storage volume",\`\${m.storage_free_gb} GB free / \${m.storage_total_gb} GB\`,m.storage_total_gb?storageUsed/m.storage_total_gb*100:0]
+      ["Host CPU",`${m.cpu_percent}%`,m.cpu_percent],
+      ["Memory",`${(memUsed/1024).toFixed(1)} / ${(m.memory_total_mb/1024).toFixed(1)} GB`,m.memory_total_mb?memUsed/m.memory_total_mb*100:0],
+      ["VM storage volume",`${m.storage_free_gb} GB free / ${m.storage_total_gb} GB`,m.storage_total_gb?storageUsed/m.storage_total_gb*100:0]
     ];
-    target.innerHTML=metrics.map(([label,value,pct])=>\`<article class="resource-card"><span class="muted">\${label}</span><b>\${value}</b><div class="meter"><span style="width:\${Math.min(100,Math.max(0,Number(pct)||0))}%"></span></div></article>\`).join("");
-  } catch(error) { target.innerHTML=\`<div class="empty">\${escapeHtml(error.message)}</div>\`; }
+    target.innerHTML=metrics.map(([label,value,pct])=>`<article class="resource-card"><span class="muted">${label}</span><b>${value}</b><div class="meter"><span style="width:${Math.min(100,Math.max(0,Number(pct)||0))}%"></span></div></article>`).join("");
+  } catch(error) { target.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 async function loadDashboard() {
   try {
@@ -54,9 +54,9 @@ async function loadDashboard() {
     byId("agent-status").textContent=agent.online?"Online":"Offline";
     byId("agent-status").className=agent.online?"online":"offline";
     setCreateEnabled(agent.online);
-    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>\`<div class="node-row"><b>\${escapeHtml(n.name)}</b><span>\${escapeHtml(n.hostname)}</span><span>\${escapeHtml(n.status)}</span></div>\`).join("");}
+    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname)}</span><span>${escapeHtml(n.status)}</span></div>`).join("");}
     if(agent.online){const [vms]=await Promise.all([api("/api/vms"),loadSwitches()]);renderVMs(vms.items||[]);await loadMonitor();}
-    else{byId("vm-count").textContent="—";byId("vm-summary").textContent="Agent not connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=\`<b>\${escapeHtml(agent.message||"Hyper-V agent is offline")}</b><p class="muted">Start the local agent and configure VPS_AGENT_URL and VPS_AGENT_TOKEN.</p>\`;byId("monitor-content").textContent="Node agent offline";}
+    else{byId("vm-count").textContent="—";byId("vm-summary").textContent="Agent not connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Hyper-V agent is offline")}</b><p class="muted">Start the local agent and configure VPS_AGENT_URL and VPS_AGENT_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
   } catch(error){byId("api-status").textContent="API unavailable";setCreateEnabled(false);notice(error.message);}
 }
 byId("create-vm-form").addEventListener("submit",async event=>{
@@ -66,10 +66,10 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   if(supplied!==0&&supplied!==3){notice("For cloud-init, fill in Linux username, SHA-512 password hash and SSH public key.");return;}
   const payload={name:String(v.get("name")).trim(),iso_path:String(v.get("iso_path")).trim(),memory_mb:Number(v.get("memory_mb")),disk_gb:Number(v.get("disk_gb")),cpu_count:Number(v.get("cpu_count")),switch_name:String(v.get("switch_name")||"")||null};
   if(supplied===3)payload.cloud_init={username,password_hash:hash,ssh_public_key:key};
-  const summary=\`\${payload.name}: \${payload.cpu_count} vCPU, \${payload.memory_mb} MB RAM, \${payload.disk_gb} GB disk\`;
-  if(!confirm(\`Create this VM?\n\n\${summary}\nCloud-init: \${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.\`))return;
+  const summary=`${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
+  if(!confirm(`Create this VM?\n\n${summary}\nCloud-init: ${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.`))return;
   const button=byId("create-vm-button");button.disabled=true;byId("create-vm-status").textContent="Creating VM…";notice("");
-  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(\`VM \${payload.name} created powered off.\`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
+  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
   catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
 });
 byId("refresh-button").addEventListener("click",loadDashboard);
@@ -77,19 +77,19 @@ byId("monitor-refresh").addEventListener("click",loadMonitor);
 byId("vm-content").addEventListener("click",async event=>{
   const button=event.target.closest("button[data-action]");if(!button)return;
   const {action,name}=button.dataset;
-  if(action==="stop"&&!confirm(\`Gracefully shut down VM "\${name}"?\`))return;
+  if(action==="stop"&&!confirm(`Gracefully shut down VM "${name}"?`))return;
   if(action==="delete"){
-    if(prompt(\`Type the exact VM name "\${name}" to remove the VM (its virtual disks will be retained):\`)!==name)return;
+    if(prompt(`Type the exact VM name "${name}" to remove the VM (its virtual disks will be retained):`)!==name)return;
     const removeDisks=confirm("Also permanently delete this VM's managed virtual disk files? This cannot be undone. Choose Cancel to retain disks.");
     if(removeDisks&&prompt("Type DELETE DISKS to confirm permanent disk removal:")!=="DELETE DISKS")return;
     button.disabled=true;
-    try{await api(\`/api/vms/\${encodeURIComponent(name)}?confirm_name=\${encodeURIComponent(name)}&delete_disks=\${removeDisks}\`,{method:"DELETE"});notice(\`VM \${name} removed. \${removeDisks?"Managed disks deleted where safe.":"Virtual disks retained."}\`);await loadDashboard();}
+    try{await api(`/api/vms/${encodeURIComponent(name)}?confirm_name=${encodeURIComponent(name)}&delete_disks=${removeDisks}`,{method:"DELETE"});notice(`VM ${name} removed. ${removeDisks?"Managed disks deleted where safe.":"Virtual disks retained."}`);await loadDashboard();}
     catch(error){notice(error.message);button.disabled=false;}return;
   }
   button.disabled=true;
   try{
-    if(action==="console"){await api(\`/api/vms/\${encodeURIComponent(name)}/console\`,{method:"POST"});notice("Hyper-V console launch requested on the Windows node. The console window opens on that machine.");}
-    else{await api(\`/api/vms/\${encodeURIComponent(name)}/\${action}\`,{method:"POST"});notice(\`VM \${name}: \${action} request completed.\`);await loadDashboard();}
+    if(action==="console"){await api(`/api/vms/${encodeURIComponent(name)}/console`,{method:"POST"});notice("Hyper-V console launch requested on the Windows node. The console window opens on that machine.");}
+    else{await api(`/api/vms/${encodeURIComponent(name)}/${action}`,{method:"POST"});notice(`VM ${name}: ${action} request completed.`);await loadDashboard();}
   }catch(error){notice(error.message);button.disabled=false;}
 });
 loadDashboard();
