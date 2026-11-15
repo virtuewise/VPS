@@ -26,8 +26,10 @@
 - [x] Host CPU, RAM and VM-volume capacity sampling
 - [ ] Validate all operations on a supported Windows 11 Hyper-V host
 - [ ] Test cloud-init against supported Ubuntu Server ISO versions
+- [x] Single-administrator login, signed expiring sessions and CSRF protection for control-plane APIs
+- [x] Bind Docker development port to localhost by default
 - [ ] Add lifecycle state reconciliation and audit log
-- [ ] Secure multi-node enrollment, TLS, and user authorization
+- [ ] Secure multi-node enrollment, mutual TLS, multi-user RBAC, rate limiting and audit logging
 
 ## Milestone 3 — Linux provider and secure node enrollment
 
