@@ -40,3 +40,19 @@ The Compose file accepts `VPS_AGENT_URL` and `VPS_AGENT_TOKEN`, but the default 
 - `DELETE /api/vms/{name}` — deletes a VM
 
 The API permits plain HTTP only for loopback addresses. Remote agent connections require HTTPS. This integration has no user login or role system yet; keep the control plane bound to loopback and never expose it publicly.
+
+
+## Create a VM from the dashboard
+
+When the local agent is online, the dashboard enables the **Create a virtual machine** form.
+
+- VM name: 3–40 letters, digits, or hyphens; must begin with a letter or digit.
+- Installer ISO: absolute path to an existing `.iso` file on the Windows host (for example, `C:\\ISO\\ubuntu-server.iso`).
+- Memory: 512–32768 MB.
+- Virtual disk: 8–500 GB.
+- Virtual CPUs: 1–16.
+- Virtual switch: optional; leave disconnected unless you have intentionally configured a suitable Hyper-V switch.
+
+The create operation builds a Generation 2 VM with a dynamically provisioned VHDX in the configured VM root and attaches the ISO. It leaves the VM powered off. Start it from the VM inventory after checking the VM's settings and network attachment.
+
+**Caution:** Creating a VM allocates host storage and reserves startup memory/CPU capacity. Use conservative values on a laptop. Do not attach an external or bridged switch unless you understand the network exposure. This early interface has no user accounts, quotas, or per-user authorization; keep it on loopback.
