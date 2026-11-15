@@ -18,7 +18,14 @@
 - [x] Dashboard VM start/stop controls
 - [x] Dashboard VM creation form with resource bounds, ISO path, and optional virtual switch
 - [x] Normalize Hyper-V inventory fields for the dashboard
-- [ ] Validate on a supported Windows 11 Hyper-V host
+- [x] Host-launched Hyper-V console action (not browser streaming)
+- [x] SSH public-key injection through Ubuntu cloud-init seed media
+- [x] Ubuntu Server autoinstall seed generation (requires Windows ADK oscdimg)
+- [x] Hyper-V guest IP and virtual NIC inventory
+- [x] Exact-name deletion confirmation and opt-in managed-disk deletion
+- [x] Host CPU, RAM and VM-volume capacity sampling
+- [ ] Validate all operations on a supported Windows 11 Hyper-V host
+- [ ] Test cloud-init against supported Ubuntu Server ISO versions
 - [ ] Add lifecycle state reconciliation and audit log
 - [ ] Secure multi-node enrollment, TLS, and user authorization
 
@@ -33,9 +40,9 @@
 ## Milestone 4 — Guest networking and usable VPS
 
 - [ ] Isolated virtual networks and firewall policies
-- [ ] DHCP/IP allocation and network status
-- [ ] SSH key injection and cloud-init
-- [ ] Console access
+- [ ] DHCP/IP allocation and public IP management
+- [ ] Browser-based console gateway (noVNC or equivalent)
+- [x] SSH public-key injection and Ubuntu cloud-init seed generation (Hyper-V prototype)
 - [ ] VM templates and snapshots
 
 ## Milestone 5 — Multi-tenant hosting
