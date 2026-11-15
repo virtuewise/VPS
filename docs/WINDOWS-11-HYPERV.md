@@ -46,18 +46,25 @@ The agent provides:
 - `GET /health` — local health check (no token).
 - `GET /v1/vms` — list virtual machines.
 - `GET /v1/switches` — list virtual switches.
+- `GET /v1/monitor` — host CPU, RAM and VM-volume capacity sample.
+- `POST /v1/vms/{name}/console` — launch VMConnect on the node's interactive desktop.
+- VM inventory includes virtual NIC, switch, MAC and reported guest IP information.
 - `POST /v1/vms` — create a Generation 2 VM with bounded CPU, RAM and disk settings.
 - `POST /v1/vms/start` and `POST /v1/vms/stop` — power operations.
-- `DELETE /v1/vms/{name}` — remove a VM and its managed VHDX.
+- `DELETE /v1/vms/{name}` — remove a VM after exact-name confirmation; managed disks are retained unless separately opted into deletion.
 
 All VM-management endpoints require `Authorization: Bearer <token>`. The agent does not provide arbitrary PowerShell execution.
+
+## Cloud-init and SSH keys
+
+The dashboard can optionally attach a generated Ubuntu autoinstall NoCloud seed ISO containing a Linux username, SHA-512 crypt password hash and SSH public key. Install Windows ADK Deployment Tools (oscdimg.exe) and set VPS_OSCDIMG if it is not on PATH. See [advanced Hyper-V features](HYPERV-ADVANCED-FEATURES.md) for supported inputs and Ubuntu ISO caveats.
 
 ## Security and limitations
 
 - Keep the agent bound to localhost until authenticated TLS and node enrollment are implemented.
 - Do not port-forward port 8765 or expose it to the internet.
 - Run the agent under an account with only the Hyper-V permissions it needs; VM creation and deletion are privileged operations.
-- The initial delete operation removes the VM's managed VHDX. Back up data first; deletion is destructive.
+- VM deletion requires explicit name confirmation. Disk files are retained by default; opt-in disk deletion is limited to disks under the configured VM root. Back up data first.
 - The initial agent is a local milestone and is not yet wired into the dashboard's control-plane node registry.
 - Ubuntu ISO boot/install and guest networking should be validated on the target hardware before treating a VM as a usable VPS.
 - Hyper-V availability and performance depend on Windows edition, firmware settings, and host hardware.
