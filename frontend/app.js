@@ -1,8 +1,12 @@
 const byId = id => document.getElementById(id);
+let csrfToken = "";
 const notice = message => { byId("notice").textContent = message; };
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
   return data;
@@ -69,7 +73,48 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   const summary=`${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
   if(!confirm(`Create this VM?\n\n${summary}\nCloud-init: ${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.`))return;
   const button=byId("create-vm-button");button.disabled=true;byId("create-vm-status").textContent="Creating VM…";notice("");
-  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
+  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await async function bootstrapAuth() {
+  try {
+    const session = await api("/api/auth/session");
+    if (!session.authenticated) {
+      byId("login-gate").hidden = false;
+      byId("admin-password").focus();
+      return;
+    }
+    csrfToken = session.csrf_token;
+    byId("login-gate").hidden = true;
+    await loadDashboard();
+  } catch (error) {
+    byId("login-gate").hidden = false;
+    byId("login-error").textContent = error.message;
+  }
+}
+byId("login-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = byId("login-button");
+  button.disabled = true;
+  byId("login-error").textContent = "";
+  try {
+    const password = byId("admin-password").value;
+    const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    csrfToken = result.csrf_token;
+    byId("admin-password").value = "";
+    byId("login-gate").hidden = true;
+    await loadDashboard();
+  } catch (error) {
+    byId("login-error").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+byId("logout-button").addEventListener("click", async () => {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
+  csrfToken = "";
+  byId("login-gate").hidden = false;
+  byId("admin-password").focus();
+  byId("api-status").textContent = "Signed out";
+});
+bootstrapAuth();}
   catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
 });
 byId("refresh-button").addEventListener("click",loadDashboard);
