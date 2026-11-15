@@ -17,13 +17,32 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function setCreateEnabled(enabled) {
+  byId("create-vm-button").disabled = !enabled;
+  byId("create-vm-status").textContent = enabled
+    ? "Agent connected. Review the settings before provisioning."
+    : "Connect the local agent to enable provisioning.";
+}
+
+async function loadSwitches() {
+  const select = byId("switch-select");
+  const selected = select.value;
+  const result = await api("/api/switches");
+  select.replaceChildren(new Option("No switch (disconnected)", ""));
+  for (const item of result.items || []) {
+    const option = new Option(`${item.name} — ${item.switch_type || "virtual switch"}`, item.name);
+    select.add(option);
+  }
+  if ([...select.options].some(option => option.value === selected)) select.value = selected;
+}
+
 function renderVMs(items) {
   const content = byId("vm-content");
   byId("vm-count").textContent = String(items.length);
   byId("vm-summary").textContent = items.length ? "VMs on connected Hyper-V host" : "No VMs found on this node";
   if (!items.length) {
     content.className = "empty";
-    content.innerHTML = '<div class="empty-icon">▣</div><b>No virtual machines found</b><p class="muted">Create a VM in Hyper-V to see it listed here.</p>';
+    content.innerHTML = '<div class="empty-icon">▣</div><b>No virtual machines found</b><p class="muted">Use the form above to create your first VM.</p>';
     return;
   }
   content.className = "vm-list";
@@ -45,6 +64,7 @@ async function loadDashboard() {
     byId("node-count").textContent = String(nodes.items.length);
     byId("agent-status").textContent = agent.online ? "Online" : "Offline";
     byId("agent-status").className = agent.online ? "online" : "offline";
+    setCreateEnabled(agent.online);
     if (nodes.items.length) {
       byId("nodes-content").className = "node-list";
       byId("nodes-content").innerHTML = nodes.items.map(node =>
@@ -52,7 +72,7 @@ async function loadDashboard() {
       ).join("");
     }
     if (agent.online) {
-      const vms = await api("/api/vms");
+      const [vms] = await Promise.all([api("/api/vms"), loadSwitches()]);
       renderVMs(vms.items || []);
     } else {
       byId("vm-count").textContent = "—";
@@ -62,9 +82,45 @@ async function loadDashboard() {
     }
   } catch (error) {
     byId("api-status").textContent = "API unavailable";
+    setCreateEnabled(false);
     notice(error.message);
   }
 }
+
+byId("create-vm-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const values = new FormData(form);
+  const payload = {
+    name: String(values.get("name")).trim(),
+    iso_path: String(values.get("iso_path")).trim(),
+    memory_mb: Number(values.get("memory_mb")),
+    disk_gb: Number(values.get("disk_gb")),
+    cpu_count: Number(values.get("cpu_count")),
+    switch_name: String(values.get("switch_name") || "") || null
+  };
+  const summary = `${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
+  if (!confirm(`Create this virtual machine?\n\n${summary}\nISO: ${payload.iso_path}\n\nThe VM will be created powered off.`)) return;
+  const button = byId("create-vm-button");
+  button.disabled = true;
+  byId("create-vm-status").textContent = "Creating VM…";
+  notice("");
+  try {
+    await api("/api/vms", { method: "POST", body: JSON.stringify(payload) });
+    byId("create-vm-status").textContent = "VM created. Refreshing inventory…";
+    notice(`VM ${payload.name} was created and is powered off.`);
+    form.reset();
+    form.elements.memory_mb.value = "2048";
+    form.elements.disk_gb.value = "20";
+    form.elements.cpu_count.value = "2";
+    await loadDashboard();
+  } catch (error) {
+    byId("create-vm-status").textContent = "Creation failed.";
+    notice(error.message);
+    setCreateEnabled(true);
+  }
+});
 
 byId("refresh-button").addEventListener("click", loadDashboard);
 byId("vm-content").addEventListener("click", async event => {
