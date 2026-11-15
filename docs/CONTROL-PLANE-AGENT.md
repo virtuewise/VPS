@@ -10,9 +10,12 @@ Because Docker Desktop cannot reach a host service that only listens on the host
 
 1. Start the agent in one PowerShell window using [the agent setup](../docs/WINDOWS-11-HYPERV.md).
 2. Copy the generated `VPS_AGENT_TOKEN` printed by the agent.
-3. In a second PowerShell window, from the repository root:
+3. In a second PowerShell window, from the repository root. Set an administrator password and a session-signing secret first:
 
 ```powershell
+$env:VPS_ADMIN_PASSWORD = "USE-A-UNIQUE-PASSWORD-OF-AT-LEAST-16-CHARACTERS"
+$env:VPS_SESSION_SECRET = (py -c "import secrets; print(secrets.token_hex(32))")
+$env:VPS_SESSION_COOKIE_SECURE = "false"
 cd backend
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -22,7 +25,7 @@ $env:VPS_AGENT_TOKEN = "PASTE-THE-TOKEN-FROM-THE-AGENT-WINDOW"
 uvicorn app.main:app --app-dir . --host 127.0.0.1 --port 8000
 ```
 
-4. Open `http://127.0.0.1:8000`. The dashboard should show agent status and VM inventory.
+4. Open `http://127.0.0.1:8000` and sign in with the administrator password you set. The dashboard should show agent status and VM inventory.
 
 The agent token is a secret. Do not commit it, put it in frontend JavaScript, or paste it into an issue. Stop both local processes when finished.
 
@@ -39,7 +42,7 @@ The Compose file accepts `VPS_AGENT_URL` and `VPS_AGENT_TOKEN`, but the default 
 - `POST /api/vms/{name}/start` and `/stop` — controls a VM
 - `DELETE /api/vms/{name}` — deletes a VM
 
-The API permits plain HTTP only for loopback addresses. Remote agent connections require HTTPS. This integration has no user login or role system yet; keep the control plane bound to loopback and never expose it publicly.
+The API permits plain HTTP only for loopback addresses. Remote agent connections require HTTPS. The control plane now requires a single administrator password (`VPS_ADMIN_PASSWORD`, at least 16 characters) and session-signing secret (`VPS_SESSION_SECRET`, at least 32 characters). It uses signed 12-hour HttpOnly/SameSite cookies and CSRF tokens for state-changing requests. This is not multi-user RBAC. Keep the control plane bound to loopback; for HTTPS reverse-proxy deployments set `VPS_SESSION_COOKIE_SECURE=true` and never expose the development server directly.
 
 
 ## Create a VM from the dashboard
