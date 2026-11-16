@@ -91,6 +91,8 @@ def initialize_database() -> None:
             payload_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),
             attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT, error TEXT,
             claimed_at INTEGER, lease_expires_at INTEGER,
+            reconciliation_status TEXT NOT NULL DEFAULT 'pending', reconciled_by INTEGER,
+            reconciled_at TEXT, reconciliation_note TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         command_columns = {row[1] for row in connection.execute("PRAGMA table_info(node_commands)").fetchall()}
@@ -98,6 +100,11 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE node_commands ADD COLUMN claimed_at INTEGER")
         if "lease_expires_at" not in command_columns:
             connection.execute("ALTER TABLE node_commands ADD COLUMN lease_expires_at INTEGER")
+        for column, declaration in (("reconciliation_status", "TEXT NOT NULL DEFAULT 'pending'"),
+                                    ("reconciled_by", "INTEGER"), ("reconciled_at", "TEXT"),
+                                    ("reconciliation_note", "TEXT")):
+            if column not in command_columns:
+                connection.execute(f"ALTER TABLE node_commands ADD COLUMN {column} {declaration}")
         connection.execute("UPDATE node_commands SET claimed_at=COALESCE(claimed_at,CAST(strftime('%s','now') AS INTEGER)),lease_expires_at=COALESCE(lease_expires_at,CAST(strftime('%s','now') AS INTEGER)+180) WHERE status='running'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_queue ON node_commands(node_id,status,created_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_lease ON node_commands(status,lease_expires_at)")
@@ -566,6 +573,20 @@ def update_user(user_id: int, request: UserUpdateRequest, admin: dict[str, Any] 
     return {"id": user_id, "username": target[1], "role": request.role, "vm_quota": request.vm_quota, "cpu_quota_cores": request.cpu_quota_cores, "memory_quota_mb": request.memory_quota_mb, "storage_quota_gb": request.storage_quota_gb, "active": request.active}
 
 
+def pending_vm_delete_command(node_id: int, vm_name: str) -> str | None:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute("""SELECT id,payload_json FROM node_commands WHERE node_id=? AND kind='vm.delete'
+            AND status IN ('queued','running','failed') AND reconciliation_status='pending'""", (node_id,)).fetchall()
+    for command_id, payload_json in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (ValueError, TypeError):
+            return command_id
+        if payload.get("name") == vm_name:
+            return command_id
+    return None
+
+
 @app.post("/api/users/{user_id}/transfer-vm", tags=["users"])
 def transfer_vm_ownership(user_id: int, vm_name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     with closing(sqlite3.connect(DATABASE_PATH, timeout=10)) as connection:
@@ -574,6 +595,19 @@ def transfer_vm_ownership(user_id: int, vm_name: str, admin: dict[str, Any] = De
         if not user or not user[2]: raise HTTPException(status_code=404, detail="Active destination user not found.")
         vm = connection.execute("SELECT vm_name,node_id,network_name FROM vm_ownership WHERE vm_name=?", (vm_name,)).fetchone()
         if not vm: raise HTTPException(status_code=404, detail="Owned VM record not found.")
+        if vm[1] is not None:
+            pending_delete = connection.execute("""SELECT id,payload_json FROM node_commands WHERE node_id=? AND kind='vm.delete'
+                AND status IN ('queued','running','failed') AND reconciliation_status='pending'""", (vm[1],)).fetchall()
+            deletion_pending = False
+            for _,payload_json in pending_delete:
+                try:
+                    deletion_pending = json.loads(payload_json or "{}").get("name") == vm_name
+                except (ValueError, TypeError):
+                    deletion_pending = True
+                if deletion_pending:
+                    break
+            if deletion_pending:
+                raise HTTPException(status_code=409, detail="VM ownership cannot be transferred while deletion is pending reconciliation.")
         if vm[2] and user[3] == "user":
             assignment = connection.execute("SELECT 1 FROM tenant_network_assignments WHERE user_id=? AND node_id=? AND network_name=?", (user_id, vm[1], vm[2])).fetchone()
             if not assignment:
@@ -955,9 +989,33 @@ def authorize_vm(name: str, user: dict[str, Any]) -> int | None:
     return row[1]
 
 
-async def dispatch_node_command(node_id: int, user_id: int, kind: str, payload: dict[str, Any], timeout: float = 60.0) -> dict[str, Any]:
+async def dispatch_node_command(node_id: int, user_id: int, kind: str, payload: dict[str, Any],
+                                 timeout: float = 60.0, actor_role: str | None = None) -> dict[str, Any]:
     command_id = str(uuid.uuid4())
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("PRAGMA busy_timeout=15000")
+        connection.execute("BEGIN IMMEDIATE")
+        if kind == "vm.delete":
+            owner = connection.execute("SELECT user_id,node_id FROM vm_ownership WHERE vm_name=?", (payload.get("name"),)).fetchone()
+            if not owner or (actor_role != "admin" and owner[0] != user_id):
+                connection.rollback()
+                raise HTTPException(status_code=404, detail="Virtual machine not found.")
+            if owner[1] != node_id:
+                connection.rollback()
+                raise HTTPException(status_code=409, detail="VM compute-node assignment changed; refresh and retry.")
+            pending = connection.execute("""SELECT id,payload_json FROM node_commands WHERE node_id=? AND kind='vm.delete'
+                AND status IN ('queued','running','failed') AND reconciliation_status='pending'""", (node_id,)).fetchall()
+            duplicate_delete = False
+            for _,payload_json in pending:
+                try:
+                    duplicate_delete = json.loads(payload_json or "{}").get("name") == payload.get("name")
+                except (ValueError, TypeError):
+                    duplicate_delete = True
+                if duplicate_delete:
+                    break
+            if duplicate_delete:
+                connection.rollback()
+                raise HTTPException(status_code=409, detail="A VM deletion command for this instance is already unresolved; reconcile it before retrying.")
         connection.execute("INSERT INTO node_commands(id,node_id,user_id,kind,payload_json,status) VALUES(?,?,?,?,?,'queued')",
                            (command_id, node_id, user_id, kind, json.dumps(payload)))
         connection.commit()
@@ -978,11 +1036,148 @@ async def dispatch_node_command(node_id: int, user_id: int, kind: str, payload: 
 @app.get("/api/node-commands/{command_id}", tags=["nodes"])
 def get_node_command(command_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-        row = connection.execute("SELECT id,node_id,user_id,kind,status,error,result_json,created_at,updated_at FROM node_commands WHERE id=?", (command_id,)).fetchone()
+        row = connection.execute("SELECT id,node_id,user_id,kind,status,error,result_json,created_at,updated_at,lease_expires_at,reconciliation_status,reconciled_at,reconciliation_note FROM node_commands WHERE id=?", (command_id,)).fetchone()
     if not row or (user["role"] != "admin" and row[2] != user["id"]):
         raise HTTPException(status_code=404, detail="Node command not found.")
     return {"id": row[0], "node_id": row[1], "kind": row[3], "status": row[4], "error": row[5],
-            "result": json.loads(row[6]) if row[6] else None, "created_at": row[7], "updated_at": row[8]}
+            "result": json.loads(row[6]) if row[6] else None, "created_at": row[7], "updated_at": row[8],
+            "lease_expires_at": row[9], "reconciliation_status": row[10],
+            "reconciled_at": row[11], "reconciliation_note": row[12]}
+
+
+@app.get("/api/admin/node-commands", tags=["nodes"])
+def list_node_command_recovery(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("""SELECT c.id,c.node_id,n.name AS node_name,n.status AS node_status,n.last_seen,
+            n.inventory_seen,n.switches_seen,c.user_id,u.username,c.kind,c.payload_json,c.status,c.error,
+            c.created_at,c.updated_at,c.lease_expires_at,c.reconciliation_status
+            FROM node_commands c JOIN nodes n ON n.id=c.node_id
+            LEFT JOIN users u ON u.id=c.user_id
+            WHERE c.kind IN ('vm.start','vm.stop','vm.delete','network.create','network.delete')
+            AND c.status IN ('running','failed') AND c.reconciliation_status='pending'
+            ORDER BY c.updated_at DESC LIMIT 100""").fetchall()
+    now = int(time.time())
+    items = []
+    for row in rows:
+        item = dict(row)
+        payload = json.loads(item.pop("payload_json") or "{}")
+        item["name"] = payload.get("name")
+        item["payload"] = payload
+        snapshot_seen = item["switches_seen"] if item["kind"].startswith("network.") else item["inventory_seen"]
+        lease_ready = item["status"] == "failed" or (item["lease_expires_at"] is not None and 0 <= now-int(item["lease_expires_at"]))
+        heartbeat_age = now-int(item["last_seen"]) if item["last_seen"] else None
+        snapshot_age = now-int(snapshot_seen) if snapshot_seen else None
+        item["can_reconcile"] = bool(item["node_status"] != "revoked" and lease_ready
+                                      and heartbeat_age is not None and 0 <= heartbeat_age <= 180
+                                      and snapshot_age is not None and 0 <= snapshot_age <= 180)
+        items.append(item)
+    return {"items": items}
+
+
+@app.post("/api/admin/node-commands/{command_id}/reconcile", tags=["nodes"])
+def reconcile_node_command(command_id: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Verify an ambiguous VM or network operation against fresh inventory; never replay it."""
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("PRAGMA busy_timeout=15000")
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("""SELECT c.node_id,c.user_id,c.kind,c.payload_json,c.status,c.lease_expires_at,
+            c.reconciliation_status,n.status,n.last_seen,n.inventory_json,n.inventory_seen,
+            n.switches_json,n.switches_seen FROM node_commands c JOIN nodes n ON n.id=c.node_id
+            WHERE c.id=?""", (command_id,)).fetchone()
+        if not row:
+            connection.rollback()
+            raise HTTPException(status_code=404, detail="Node command not found.")
+        node_id, owner_id, kind, payload_json, status, lease_expires_at, reconciliation_status = row[:7]
+        if kind not in {"vm.start", "vm.stop", "vm.delete", "network.create", "network.delete"}:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="This command type cannot be reconciled from VM or network inventory.")
+        if status not in {"running", "failed"} or reconciliation_status != "pending":
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="This command is not awaiting reconciliation.")
+        now = int(time.time())
+        if status == "running" and (lease_expires_at is None or int(lease_expires_at) > now):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The node still owns an active command lease. Wait for completion or lease expiry before reconciling.")
+        if row[7] == "revoked" or not row[8] or not 0 <= now-int(row[8]) <= 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The assigned node must report a fresh heartbeat before reconciliation.")
+        network_command = kind.startswith("network.")
+        snapshot = row[11] if network_command else row[9]
+        snapshot_seen = row[12] if network_command else row[10]
+        if not snapshot_seen or not 0 <= now-int(snapshot_seen) <= 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="A fresh provider inventory snapshot is required before reconciliation.")
+        try:
+            inventory = json.loads(snapshot or "[]")
+        except (ValueError, TypeError):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The latest provider inventory is invalid.") from None
+        if not isinstance(inventory, list) or any(not isinstance(item, dict) for item in inventory):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The latest provider inventory is incomplete.")
+        payload = json.loads(payload_json or "{}")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Command payload has no verifiable resource name.")
+        matching = next((item for item in inventory if item.get("name") == name), None)
+        observed_state = ("present" if matching else "absent") if network_command else (str(matching.get("state") or "").strip().lower() if matching else "absent")
+        if kind == "vm.start":
+            if not matching or observed_state not in {"running", "started", "up", "active"}:
+                if matching and observed_state not in {"off", "stopped", "shut off", "shutdown", "powered off", "deallocated"}:
+                    connection.rollback()
+                    raise HTTPException(status_code=409, detail="VM state is not recognized; refusing to infer whether start succeeded.")
+                verified = False
+            else:
+                verified = True
+        elif kind == "vm.stop":
+            if not matching or observed_state not in {"off", "stopped", "shut off", "shutdown", "powered off", "deallocated"}:
+                if matching and observed_state not in {"running", "started", "up", "active"}:
+                    connection.rollback()
+                    raise HTTPException(status_code=409, detail="VM state is not recognized; refusing to infer whether stop succeeded.")
+                verified = False
+            else:
+                verified = True
+        elif kind == "vm.delete":
+            verified = matching is None
+        elif kind == "network.create":
+            verified = any(item.get("name") == name for item in inventory)
+        else:
+            verified = not any(item.get("name") == name for item in inventory)
+        result = {"reconciled": True, "inventory_verified": True, "kind": kind,
+                  "name": name, "observed_state": observed_state,
+                  "desired_state_confirmed": verified}
+        new_status = "succeeded" if verified else "failed"
+        new_reconciliation = "verified" if verified else "mismatch"
+        note = "Fresh provider inventory confirms the requested state." if verified else "Fresh provider inventory does not confirm the requested state; inspect the provider before retrying."
+        error = None if verified else note
+        connection.execute("""UPDATE node_commands SET status=?,result_json=?,error=?,lease_expires_at=NULL,
+            reconciliation_status=?,reconciled_by=?,reconciled_at=CURRENT_TIMESTAMP,reconciliation_note=?,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (new_status, json.dumps(result), error, new_reconciliation, admin["id"], note, command_id))
+        if kind == "vm.delete" and verified:
+            connection.execute("DELETE FROM vm_ownership WHERE vm_name=? AND node_id=? AND user_id=?", (name, node_id, owner_id))
+        elif kind == "network.create":
+            if verified:
+                connection.execute("""INSERT INTO managed_networks(node_id,name,mode,cidr,status,created_by)
+                    VALUES(?,?,?,?, 'active',?) ON CONFLICT(node_id,name) DO UPDATE SET
+                    mode=excluded.mode,cidr=excluded.cidr,status='active'""",
+                    (node_id, name, payload.get("mode", "isolated"), payload.get("cidr"), owner_id))
+            else:
+                connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='provisioning'", (node_id, name))
+        elif kind == "network.delete":
+            if verified:
+                connection.execute("DELETE FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name))
+                connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='deleting'", (node_id, name))
+            else:
+                connection.execute("UPDATE managed_networks SET status='active' WHERE node_id=? AND name=? AND status='deleting'", (node_id, name))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "node.command.reconciled", name,
+          f"command_id={command_id}; kind={kind}; outcome={new_reconciliation}; node_id={node_id}")
+    return {"command_id": command_id, "kind": kind, "name": name, "status": new_status,
+            "reconciliation_status": new_reconciliation, "verified": verified,
+            "message": note}
 
 
 @app.post("/api/vms/{name}/start", tags=["instances"])
@@ -1015,7 +1210,10 @@ async def delete_vm(name: str, confirm_name: str, delete_disks: bool = False, us
         raise HTTPException(status_code=400, detail="Deletion confirmation must exactly match the VM name.")
     node_id = authorize_vm(name, user)
     if node_id:
-        result = await dispatch_node_command(node_id, user["id"], "vm.delete", {"name": name, "confirm_name": confirm_name, "delete_disks": delete_disks})
+        pending_delete = pending_vm_delete_command(node_id, name)
+        if pending_delete:
+            raise HTTPException(status_code=409, detail=f"A VM deletion command is already unresolved ({pending_delete}). Check GET /api/node-commands/{pending_delete} or reconcile it from the administrator panel before retrying.")
+        result = await dispatch_node_command(node_id, user["id"], "vm.delete", {"name": name, "confirm_name": confirm_name, "delete_disks": delete_disks}, actor_role=user["role"])
     else:
         result = await agent_request("DELETE", f"/v1/vms/{name}", {"name": name, "confirm_name": confirm_name, "delete_disks": delete_disks})
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
@@ -1346,8 +1544,9 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
         if not row:
             connection.rollback()
             raise HTTPException(status_code=404, detail="Running node command not found.")
-        connection.execute("UPDATE node_commands SET status=?,result_json=?,error=?,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                           (completion.status, result_json, completion.error[:1000] if completion.error else None, command_id))
+        connection.execute("UPDATE node_commands SET status=?,result_json=?,error=?,lease_expires_at=NULL,reconciliation_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (completion.status, result_json, completion.error[:1000] if completion.error else None,
+                            "not_required" if completion.status == "succeeded" else "pending", command_id))
         if completion.status == "succeeded" and inventory_snapshot is not None:
             connection.execute("UPDATE nodes SET inventory_json=?,inventory_seen=? WHERE id=?",
                                (json.dumps(inventory_snapshot, separators=(",", ":")), int(time.time()), node_id))

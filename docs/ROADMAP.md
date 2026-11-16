@@ -31,7 +31,8 @@
 - [x] Add administrative audit events for authentication, accounts, ownership, and VM lifecycle requests
 - [x] Durable provisioning and node-command history with restart recovery
 - [x] Administrator recovery workflow for ambiguous node-routed VM-create outcomes (fresh inventory required; no automatic retry)
-- [ ] Full VM lifecycle reconciliation, provider cleanup and automated operator recovery
+- [x] Inventory-based reconciliation for node-routed VM start/stop/delete and network create/delete commands
+- [ ] Legacy-agent lifecycle reconciliation, provider-side partial cleanup and safe automated retries
 - [x] Add initial multi-user RBAC, VM ownership, VM-count quotas, login throttling, and administrative audit view
 - [x] One-time secure node enrollment, hashed per-node credentials, administrator revocation and credential rotation endpoint (agent environment update/restart is manual)
 - [x] Dashboard node enrollment, one-time token display/copy and node revocation management
@@ -93,7 +94,7 @@
 - [ ] Add rollback/cleanup for partially completed VM provisioning
 - [x] Persist provisioning jobs and recover queued work after API restarts
 - [x] Per-user VM-create API idempotency keys with request-fingerprint conflict detection
-- [ ] Add provider idempotency keys, safe retries and full VM lifecycle reconciliation
+- [ ] Add provider idempotency keys, safe retries and legacy-agent lifecycle reconciliation
 - [ ] Add encrypted backups and tested restore procedures
 - [ ] Complete threat modelling, dependency scanning, secret rotation, and external security review
 - [ ] Add resource enforcement, abuse controls, acceptable-use process, and operational monitoring

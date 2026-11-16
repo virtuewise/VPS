@@ -114,6 +114,9 @@
         <h4>Provisioning recovery</h4>
         <p class="muted">Resolve interrupted VM creation only after the assigned node reports a fresh inventory. Confirming absence releases the ownership and quota reservation; confirming presence closes the job as successful. These actions never replay a provider command.</p>
         <div id="provisioning-recovery-content" class="audit-list">Loading unresolved provisioning jobs.</div>
+        <h4>VM and network command recovery</h4>
+        <p class="muted">For timed-out start, stop, delete and network operations, verify the requested result against a fresh node inventory. Commands with an active agent lease cannot be reconciled yet. This never replays the command.</p>
+        <div id="node-command-recovery-content" class="audit-list">Loading unresolved lifecycle commands.</div>
         <h4>Virtual networks</h4>
         <p class="muted">Create isolated networks on a connected node. libvirt supports isolated DHCP and NAT/DHCP networks; Hyper-V supports private isolated switches only.</p>
         <form id="network-form" class="create-form">

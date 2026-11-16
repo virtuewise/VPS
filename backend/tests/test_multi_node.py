@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+import uuid
 from unittest.mock import AsyncMock, patch
 from contextlib import closing
 from pathlib import Path
@@ -276,6 +277,86 @@ class MultiNodeTests(unittest.TestCase):
         with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
             remaining_assignments = db.execute("SELECT COUNT(*) FROM tenant_network_assignments WHERE user_id=?", (customer2["id"],)).fetchone()[0]
         self.assertEqual(remaining_assignments, 0)
+
+    def test_operator_reconciles_ambiguous_vm_and_network_lifecycle_commands(self):
+        with TestClient(main.app) as client:
+            admin_headers = self._login(client)
+            customer = client.post("/api/users", headers=admin_headers, json={
+                "username": "command-recovery-customer", "password": "command-recovery-customer-password-123", "role": "user", "vm_quota": 5
+            }).json()
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            inventory = [
+                {"name": "running-vm", "state": "Running"},
+                {"name": "stopped-vm", "state": "Off"},
+                {"name": "off-vm", "state": "Off"},
+            ]
+            switches = [{"name": "new-net", "switch_type": "isolated"}, {"name": "keep-net", "switch_type": "nat"}]
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "hyperv", "cpu_total": 8, "cpu_used": 0.1,
+                "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20,
+                "inventory": inventory, "switches": switches,
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            customer_login = client.post("/api/auth/login", json={"username": "command-recovery-customer", "password": "command-recovery-customer-password-123"})
+            customer_headers = {"X-CSRF-Token": customer_login.json()["csrf_token"]}
+            self.assertEqual(client.get("/api/admin/node-commands", headers=customer_headers).status_code, 403)
+            admin_headers = self._login(client)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                admin_id = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
+                db.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb,node_id) VALUES('deleted-vm',?,1,512,8,?)", (admin_id,node_id))
+                db.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb,node_id) VALUES('pending-delete-vm',?,1,512,8,?)", (admin_id,node_id))
+                db.execute("INSERT INTO node_commands(id,node_id,user_id,kind,payload_json,status,lease_expires_at) VALUES(?,?,?,?,?,'running',?)",
+                           (str(uuid.uuid4()),node_id,admin_id,'vm.delete',json.dumps({"name":"pending-delete-vm","confirm_name":"pending-delete-vm","delete_disks":False}),int(time.time())+180))
+                db.execute("INSERT INTO managed_networks(node_id,name,mode,cidr,status,created_by) VALUES(?,?,'isolated','192.168.110.0/24','provisioning',?)", (node_id,'new-net',admin_id))
+                db.execute("INSERT INTO managed_networks(node_id,name,mode,cidr,status,created_by) VALUES(?,?,'isolated','192.168.111.0/24','deleting',?)", (node_id,'remove-net',admin_id))
+                commands = {
+                    "start": ("vm.start", {"name": "running-vm"}),
+                    "stop": ("vm.stop", {"name": "stopped-vm"}),
+                    "delete": ("vm.delete", {"name": "deleted-vm", "confirm_name": "deleted-vm", "delete_disks": False}),
+                    "network_create": ("network.create", {"name": "new-net", "mode": "isolated", "cidr": "192.168.110.0/24"}),
+                    "network_delete": ("network.delete", {"name": "remove-net"}),
+                    "mismatch": ("vm.start", {"name": "off-vm"}),
+                    "active": ("vm.stop", {"name": "stopped-vm"}),
+                }
+                ids = {}
+                for key,(kind,payload) in commands.items():
+                    command_id = str(uuid.uuid4())
+                    ids[key] = command_id
+                    status = "running" if key == "active" else "failed"
+                    lease = int(time.time())+180 if key == "active" else None
+                    db.execute("INSERT INTO node_commands(id,node_id,user_id,kind,payload_json,status,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                               (command_id,node_id,admin_id,kind,json.dumps(payload),status,lease))
+                db.commit()
+            admin_context = {"id": admin_id, "username": "admin", "role": "admin"}
+            with self.assertRaises(HTTPException) as blocked_transfer:
+                main.transfer_vm_ownership(customer["id"], "pending-delete-vm", admin_context)
+            self.assertEqual(blocked_transfer.exception.status_code, 409)
+            recovery = client.get("/api/admin/node-commands", headers=admin_headers)
+            self.assertEqual(recovery.status_code, 200, recovery.text)
+            recovery_items = {item["id"]: item for item in recovery.json()["items"]}
+            self.assertTrue(recovery_items[ids["start"]]["can_reconcile"])
+            self.assertFalse(recovery_items[ids["active"]]["can_reconcile"])
+            blocked_active = client.post(f"/api/admin/node-commands/{ids['active']}/reconcile", headers=admin_headers)
+            self.assertEqual(blocked_active.status_code, 409)
+            for key in ("start", "stop", "delete", "network_create", "network_delete", "mismatch"):
+                response = client.post(f"/api/admin/node-commands/{ids[key]}/reconcile", headers=admin_headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["verified"] if key != "mismatch" else not response.json()["verified"])
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                states = {key: db.execute("SELECT status,reconciliation_status FROM node_commands WHERE id=?", (ids[key],)).fetchone()
+                          for key in ("start","stop","delete","network_create","network_delete","mismatch")}
+                self.assertEqual(states["start"], ("succeeded","verified"))
+                self.assertEqual(states["stop"], ("succeeded","verified"))
+                self.assertEqual(states["delete"], ("succeeded","verified"))
+                self.assertEqual(states["network_create"], ("succeeded","verified"))
+                self.assertEqual(states["network_delete"], ("succeeded","verified"))
+                self.assertEqual(states["mismatch"], ("failed","mismatch"))
+                self.assertIsNone(db.execute("SELECT vm_name FROM vm_ownership WHERE vm_name='deleted-vm'").fetchone())
+                self.assertEqual(db.execute("SELECT status FROM managed_networks WHERE node_id=? AND name='new-net'", (node_id,)).fetchone()[0], "active")
+                self.assertIsNone(db.execute("SELECT name FROM managed_networks WHERE node_id=? AND name='remove-net'", (node_id,)).fetchone())
+            self.assertEqual(client.get(f"/api/node-commands/{ids['delete']}", headers=admin_headers).json()["reconciliation_status"], "verified")
 
     def test_node_command_leases_survive_restart_and_expire_only_after_heartbeat_stops(self):
         with TestClient(main.app) as client:

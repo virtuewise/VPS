@@ -21,7 +21,7 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 - Outbound authenticated node command polling for VM create/start/stop/delete/console operations; no inbound node-agent listener is required
 - Multi-node VM inventory, switch and monitoring aggregation; per-node VM placement and lifecycle routing, including switch-aware node affinity
 - Admin dashboard for one-time node enrollment, credential revocation, customer-safe node summaries and isolated virtual network management with one-customer network assignments; customers see only assigned switches
-- CPU, RAM and storage quotas with transactional allocation reservations and administrator-controlled recovery for ambiguous node provisioning and per-user VM-create idempotency keys
+- CPU, RAM and storage quotas with transactional allocation reservations and administrator-controlled recovery for ambiguous provisioning and VM/network lifecycle commands and per-user VM-create idempotency keys
 - First-party read-only MCP server with scoped per-customer tokens and Streamable HTTP, plus a signed, versioned provider SDK with administrator-controlled package lifecycle
 - Searchable developer portal at `/developers`
 

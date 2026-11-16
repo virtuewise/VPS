@@ -62,3 +62,15 @@ This first recovery workflow covers node-routed VM creation. Legacy single-agent
 - After an ambiguous job is reconciled as absent, a new provisioning attempt must use a new key.
 
 This protects the control-plane API against client retries and lost responses. Provider-level idempotency keys and safe provider retries are still outstanding; the control plane does not blindly retry provider operations.
+
+
+## VM and network lifecycle command recovery
+
+The administrator dashboard also lists ambiguous node-routed `vm.start`, `vm.stop`, `vm.delete`, `network.create` and `network.delete` commands. Reconciliation is blocked while the agent still owns an unexpired command lease. After the lease expires or the agent reports failure, the control plane requires a fresh heartbeat and a separately timestamped fresh VM or switch inventory:
+
+- Start/stop are marked successful only when the reported VM state matches the requested state. Unknown provider states are not guessed.
+- Delete is marked successful only when the VM is absent; its matching ownership record is then released. A still-present VM remains owned and the command is recorded as a mismatch.
+- Network creation is marked successful only when the switch exists; its managed-network record is restored or created as active. If absent, a stale provisioning record is removed.
+- Network deletion is marked successful only when the switch is absent; if still present, the managed record is restored to active.
+
+All outcomes are audited. Reconciliation does not execute or retry provider commands. VM ownership transfer and repeated VM deletion are blocked while a deletion command remains unresolved. Console launch commands are not inventory-reconcilable and remain visible through their command status endpoint.
