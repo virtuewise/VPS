@@ -8,7 +8,7 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 
 - FastAPI control-plane API and lightweight dashboard
 - Username/password accounts with PBKDF2 password hashing, signed expiring sessions, HttpOnly cookies and CSRF checks
-- Initial administrator-only account creation and account-event audit APIs
+- Administrator-managed accounts, admin/user roles, per-user VM ownership, instance-count quotas and an application audit log
 - SQLite metadata store and Docker Compose development setup
 - Windows Hyper-V agent with bearer-token authentication and allow-listed VM operations
 - Dashboard agent health, VM inventory and VM start/stop/create actions
@@ -51,7 +51,7 @@ See docs/ACCOUNTS-AND-ADMINISTRATION.md for account setup and the current multi-
 ## Security and limitations
 
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
-- The dashboard now requires a configured administrator password and session-signing secret. Account and role scaffolding exists, but VM management is still administrator-only; per-user VM ownership and quota enforcement are not implemented.
+- The dashboard now requires a configured administrator password and session-signing secret. Non-admin accounts are limited to their recorded VMs and per-user instance-count quotas. Existing VMs created before ownership tracking remain administrator-only until an ownership-transfer workflow is added. CPU/RAM/disk resource quotas, billing, MFA and production hardening remain outstanding.
 - The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
 - Remote agent connections require HTTPS; secure enrollment, mutual TLS, role-based authorization, audit logging and a security review remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
