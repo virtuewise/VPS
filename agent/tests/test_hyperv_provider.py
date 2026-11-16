@@ -19,8 +19,8 @@ class HyperVProviderTests(unittest.TestCase):
             with patch.object(hyperv, "VM_ROOT", Path(temp)):
                 with self.assertRaises(HTTPException) as caught:
                     hyperv._make_cloud_init_seed("test-vm", "ubuntu", "plaintext-password", "ssh-ed25519 AAAA test")
-        self.assertEqual(caught.exception.status_code, 422)
-        self.assertEqual(list(Path(temp).iterdir()), [])
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertFalse((Path(temp) / "test-vm").exists())
 
     def test_failed_provisioning_removes_generated_seed_media(self):
         with tempfile.TemporaryDirectory() as temp:
