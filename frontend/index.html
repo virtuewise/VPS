@@ -11,7 +11,7 @@
   <div id="login-gate" class="login-gate" hidden>
     <form id="login-form" class="login-card">
       <div class="brand"><span class="brand-mark">V</span><span>VirtueWise <b>VPS</b></span></div>
-      <h1>Administrator sign in</h1>
+      <h1>Sign in to VirtueWise VPS</h1>
       <p class="muted">Sign in to manage your virtual machines and compute nodes.</p>
       <label for="admin-username">Username</label>
       <input id="admin-username" name="username" type="text" autocomplete="username" value="admin" required>
@@ -76,6 +76,31 @@
     <section class="panel" id="nodes">
       <div class="panel-heading"><div><h3>Compute nodes</h3><p class="muted">Registered machines that can host virtual servers.</p></div><span class="tag">EARLY ACCESS</span></div>
       <div id="nodes-content" class="empty"><div class="empty-icon">▤</div><b>No enrolled nodes yet</b><p class="muted">Secure multi-node enrollment is a later milestone.</p></div>
+    </section>
+    <section class="panel admin-panel" id="administration" hidden>
+      <div class="panel-heading"><div><h3>Customer accounts</h3><p class="muted">Create accounts, manage quotas and transfer VM ownership.</p></div><span class="tag">ADMIN</span></div>
+      <form id="user-create-form" class="create-form">
+        <div class="form-grid">
+          <label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" required></label>
+          <label>Temporary password<input name="password" type="password" minlength="16" autocomplete="new-password" required></label>
+          <label>Role<select name="role"><option value="user">Customer</option><option value="admin">Administrator</option></select></label>
+          <label>VM quota<input name="vm_quota" type="number" min="0" max="1000" value="3" required></label>
+        </div>
+        <div class="form-actions"><button type="submit">Create account</button><span class="muted">Passwords must be at least 16 characters.</span></div>
+      </form>
+      <div id="users-content" class="user-list"><div class="empty">Loading accounts…</div></div>
+      <div class="ownership-transfer">
+        <h4>Transfer VM ownership</h4>
+        <form id="transfer-vm-form" class="form-grid">
+          <label>VM name<input name="vm_name" minlength="3" maxlength="40" required></label>
+          <label>New owner<select name="user_id" id="transfer-user-select" required></select></label>
+          <div class="form-actions"><button type="submit" class="secondary">Transfer ownership</button></div>
+        </form>
+      </div>
+      <div class="ownership-transfer">
+        <h4>Recent audit events</h4>
+        <div id="audit-content" class="audit-list">Loading audit log…</div>
+      </div>
     </section>
     <p id="notice" class="notice" role="status" aria-live="polite"></p>
     <footer>VirtueWise VPS <span>Open source · Self-hosted · Built in public</span></footer>
