@@ -107,6 +107,12 @@ class UserCreateRequest(BaseModel):
     vm_quota: int = Field(default=3, ge=0, le=1000)
 
 
+class UserUpdateRequest(BaseModel):
+    role: str = Field(pattern=r"^(admin|user)$")
+    vm_quota: int = Field(ge=0, le=1000)
+    active: bool
+
+
 class CreateVMRequest(BaseModel):
     name: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*$")
     memory_mb: int = Field(default=2048, ge=512, le=32768)
@@ -172,6 +178,51 @@ def create_user(request: UserCreateRequest, admin: dict[str, Any] = Depends(requ
     except sqlite3.IntegrityError: raise HTTPException(status_code=409, detail="Username already exists.") from None
     audit(DATABASE_PATH, admin, "user.create", request.username, f"role={request.role}; quota={request.vm_quota}")
     return {"id": cursor.lastrowid, "username": request.username, "role": request.role, "vm_quota": request.vm_quota}
+
+
+@app.patch("/api/users/{user_id}", tags=["users"])
+def update_user(user_id: int, request: UserUpdateRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        target = connection.execute("SELECT id,username,role,active FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target: raise HTTPException(status_code=404, detail="User not found.")
+        if target[0] == admin["id"] and (request.role != "admin" or not request.active):
+            raise HTTPException(status_code=400, detail="You cannot demote or suspend your own administrator account.")
+        if target[2] == "admin" and (request.role != "admin" or not request.active):
+            count = connection.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]
+            if count <= 1: raise HTTPException(status_code=400, detail="At least one active administrator must remain.")
+        connection.execute("UPDATE users SET role=?,vm_quota=?,active=? WHERE id=?", (request.role, request.vm_quota, int(request.active), user_id))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "user.update", target[1], f"role={request.role}; quota={request.vm_quota}; active={request.active}")
+    return {"id": user_id, "username": target[1], "role": request.role, "vm_quota": request.vm_quota, "active": request.active}
+
+
+@app.post("/api/users/{user_id}/transfer-vm", tags=["users"])
+def transfer_vm_ownership(user_id: int, vm_name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        user = connection.execute("SELECT id,username,active FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user or not user[2]: raise HTTPException(status_code=404, detail="Active destination user not found.")
+        vm = connection.execute("SELECT vm_name FROM vm_ownership WHERE vm_name=?", (vm_name,)).fetchone()
+        if not vm: raise HTTPException(status_code=404, detail="Owned VM record not found.")
+        connection.execute("UPDATE vm_ownership SET user_id=? WHERE vm_name=?", (user_id, vm_name))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "vm.transfer", vm_name, f"new_owner={user[1]}")
+    return {"vm_name": vm_name, "owner": user[1]}
+
+
+@app.delete("/api/users/{user_id}", tags=["users"])
+def delete_user(user_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, bool]:
+    if user_id == admin["id"]: raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        target = connection.execute("SELECT username,role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target: raise HTTPException(status_code=404, detail="User not found.")
+        if target[1] == "admin" and connection.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0] <= 1:
+            raise HTTPException(status_code=400, detail="At least one active administrator must remain.")
+        owned = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE user_id=?", (user_id,)).fetchone()[0]
+        if owned: raise HTTPException(status_code=409, detail=f"Transfer or delete the user's {owned} VM ownership record(s) before deleting this account.")
+        connection.execute("DELETE FROM users WHERE id=?", (user_id,))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "user.delete", target[0])
+    return {"success": True}
 
 
 @app.get("/api/audit", tags=["administration"])
