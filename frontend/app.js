@@ -1,5 +1,6 @@
 const byId = id => document.getElementById(id);
 let csrfToken = "";
+let currentUser = null;
 const notice = message => { byId("notice").textContent = message; };
 
 async function api(path, options = {}) {
@@ -54,6 +55,17 @@ async function loadMonitor() {
     target.innerHTML=metrics.map(([label,value,pct])=>`<article class="resource-card"><span class="muted">${label}</span><b>${value}</b><div class="meter"><span style="width:${Math.min(100,Math.max(0,Number(pct)||0))}%"></span></div></article>`).join("");
   } catch(error) { target.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
+async function loadAdminPanel() {
+  if (!currentUser || currentUser.role !== 'admin') { byId('administration').hidden = true; return; }
+  byId('administration').hidden = false;
+  const result = await api('/api/users');
+  const select = byId('transfer-user-select'); select.replaceChildren();
+  for (const u of result.items) if (u.active && u.role === 'user') select.add(new Option(u.username, String(u.id)));
+  byId('users-content').innerHTML = result.items.map(u => '<div class="user-row" data-user-id="'+u.id+'"><b>'+escapeHtml(u.username)+'</b><select data-field="role"><option value="user" '+(u.role==='user'?'selected':'')+'>Customer</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrator</option></select><input data-field="quota" type="number" min="0" max="1000" value="'+u.vm_quota+'"><select data-field="active"><option value="true" '+(u.active?'selected':'')+'>Active</option><option value="false" '+(!u.active?'selected':'')+'>Suspended</option></select><button class="secondary" data-user-action="save">Save</button><button class="danger" data-user-action="delete" '+(u.id===currentUser.id?'disabled':'')+'>Delete</button></div>').join('') || '<p>No accounts yet.</p>';
+  const log = await api('/api/audit?limit=30');
+  byId('audit-content').innerHTML = log.items.map(e => '<div class="audit-row"><b>'+escapeHtml(e.action)+'</b> · '+escapeHtml(e.actor_username)+' · '+escapeHtml(e.target)+' <span class="muted">'+escapeHtml(e.created_at)+'</span></div>').join('') || 'No events recorded.';
+}
+
 async function loadDashboard() {
   try {
     const [health,nodes,agent]=await Promise.all([api("/api/health"),api("/api/nodes"),api("/api/agent/status")]);
@@ -80,6 +92,9 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
   catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
 });
+byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
+byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });
+byId('transfer-vm-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f), name=String(v.get('vm_name')).trim(), id=String(v.get('user_id')); if(!confirm('Transfer VM '+name+' to this customer?')) return; try { await api('/api/users/'+id+'/transfer-vm?vm_name='+encodeURIComponent(name),{method:'POST'}); notice('VM ownership transferred.'); f.reset(); } catch(e) { notice(e.message); } });
 byId("refresh-button").addEventListener("click",loadDashboard);
 byId("monitor-refresh").addEventListener("click",loadMonitor);
 byId("vm-content").addEventListener("click",async event=>{
@@ -109,8 +124,10 @@ async function bootstrapAuth() {
       return;
     }
     csrfToken = session.csrf_token;
+    currentUser = session.user;
     byId("login-gate").hidden = true;
     await loadDashboard();
+    await loadAdminPanel();
   } catch (error) {
     byId("login-gate").hidden = false;
     byId("login-error").textContent = error.message;
@@ -126,9 +143,11 @@ byId("login-form").addEventListener("submit", async event => {
     const password = byId("admin-password").value;
     const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
     csrfToken = result.csrf_token;
+    currentUser = result.user;
     byId("admin-password").value = "";
     byId("login-gate").hidden = true;
     await loadDashboard();
+    await loadAdminPanel();
   } catch (error) {
     byId("login-error").textContent = error.message;
   } finally {
@@ -138,6 +157,8 @@ byId("login-form").addEventListener("submit", async event => {
 byId("logout-button").addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
   csrfToken = "";
+  currentUser = null;
+  byId("administration").hidden = true;
   byId("login-gate").hidden = false;
   byId("admin-password").focus();
   byId("api-status").textContent = "Signed out";
