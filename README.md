@@ -7,7 +7,8 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 ## Current capabilities
 
 - FastAPI control-plane API and lightweight dashboard
-- Administrator password login with signed, expiring sessions, HttpOnly cookies and CSRF checks on state-changing API requests
+- Username/password accounts with PBKDF2 password hashing, signed expiring sessions, HttpOnly cookies and CSRF checks
+- Initial administrator-only account creation and account-event audit APIs
 - SQLite metadata store and Docker Compose development setup
 - Windows Hyper-V agent with bearer-token authentication and allow-listed VM operations
 - Dashboard agent health, VM inventory and VM start/stop/create actions
@@ -45,10 +46,12 @@ Follow the Windows 11 Hyper-V setup guide, then the control-plane/agent setup gu
 
 See docs/HYPERV-ADVANCED-FEATURES.md for console, cloud-init, SSH, network reporting, deletion safeguards and monitoring setup.
 
+See docs/ACCOUNTS-AND-ADMINISTRATION.md for account setup and the current multi-user foundation.
+
 ## Security and limitations
 
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
-- The dashboard now requires a configured administrator password and session-signing secret. This is single-admin authentication, not multi-user roles or tenant isolation.
+- The dashboard now requires a configured administrator password and session-signing secret. Account and role scaffolding exists, but VM management is still administrator-only; per-user VM ownership and quota enforcement are not implemented.
 - The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
 - Remote agent connections require HTTPS; secure enrollment, mutual TLS, role-based authorization, audit logging and a security review remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
