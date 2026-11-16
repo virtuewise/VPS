@@ -9,11 +9,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.providers import hyperv as hyperv_provider, libvirt
+from app.providers.interface import validate_provider
 
 PROVIDER_NAME = os.getenv("VPS_PROVIDER", "hyperv").strip().lower()
 if PROVIDER_NAME not in {"hyperv", "libvirt"}:
     raise RuntimeError("VPS_PROVIDER must be either hyperv or libvirt.")
 hyperv = libvirt if PROVIDER_NAME == "libvirt" else hyperv_provider
+validate_provider(hyperv)
 
 AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
 if len(AGENT_TOKEN) < 32:
