@@ -22,6 +22,12 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+class CloudInitRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    password_hash: str = Field(min_length=90, max_length=200, pattern=r"^\\$6\\$(?:rounds=[0-9]+\\$)?[A-Za-z0-9./]{1,16}\\$[A-Za-z0-9./]{86}$")
+    ssh_public_key: str = Field(min_length=40, max_length=8192, pattern=r"^(?:ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\\r\\n]{0,100})?$")
+
+
 class CreateVMRequest(BaseModel):
     name: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*$")
     memory_mb: int = Field(default=2048, ge=512, le=32768)
@@ -29,7 +35,7 @@ class CreateVMRequest(BaseModel):
     cpu_count: int = Field(default=2, ge=1, le=16)
     iso_path: str = Field(min_length=5, max_length=260)
     switch_name: str | None = Field(default=None, max_length=100)
-    cloud_init: dict[str, str] | None = None
+    cloud_init: CloudInitRequest | None = None
 
     @field_validator("iso_path")
     @classmethod
