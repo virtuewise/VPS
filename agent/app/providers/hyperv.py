@@ -230,11 +230,23 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
     seed_iso = None
     if cloud_init:
         seed_iso = _make_cloud_init_seed(name, cloud_init["username"], cloud_init["password_hash"], cloud_init["ssh_public_key"])
-    return _run("create", {
-        "name": name, "memory_mb": memory_mb, "disk_gb": disk_gb, "cpu_count": cpu_count,
-        "iso_path": str(iso), "vhd_path": str(vhd), "switch_name": switch_name or "",
-        "seed_iso_path": str(seed_iso) if seed_iso else "",
-    })
+    try:
+        return _run("create", {
+            "name": name, "memory_mb": memory_mb, "disk_gb": disk_gb, "cpu_count": cpu_count,
+            "iso_path": str(iso), "vhd_path": str(vhd), "switch_name": switch_name or "",
+            "seed_iso_path": str(seed_iso) if seed_iso else "",
+        })
+    except Exception:
+        if seed_iso:
+            seed_iso.unlink(missing_ok=True)
+            seed_dir = seed_iso.parent / "cloud-init"
+            if seed_dir.exists():
+                shutil.rmtree(seed_dir, ignore_errors=True)
+            try:
+                seed_iso.parent.rmdir()
+            except OSError:
+                pass
+        raise
 
 
 def vm_action(action: str, name: str, *, delete_disks: bool = False) -> Any:
