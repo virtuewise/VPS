@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+import asyncio
+from contextlib import asynccontextmanager
 import os
 import re
 from typing import Any
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.providers import hyperv as hyperv_provider, libvirt
 from app.providers.interface import validate_provider
+from app.heartbeat import heartbeat_config, heartbeat_loop
 
 PROVIDER_NAME = os.getenv("VPS_PROVIDER", "hyperv").strip().lower()
 if PROVIDER_NAME not in {"hyperv", "libvirt"}:
@@ -21,7 +24,22 @@ AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
 if len(AGENT_TOKEN) < 32:
     raise RuntimeError("Set VPS_AGENT_TOKEN to a random secret of at least 32 characters.")
 
-app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.3.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    config = heartbeat_config()
+    task = asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.3.0")) if config else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=3)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+
+app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.3.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
