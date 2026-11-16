@@ -10,7 +10,7 @@ os.environ["VPS_SESSION_SECRET"] = "test-session-secret-which-is-long-enough-123
 os.environ["VPS_DATABASE_PATH"] = str(TEST_DB)
 
 from fastapi.testclient import TestClient
-from app.main import app
+from app.main import app, CloudInitRequest
 
 
 class AccountApiTests(unittest.TestCase):
@@ -23,6 +23,15 @@ class AccountApiTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
         TEST_DB.unlink(missing_ok=True)
+
+
+    def test_cloud_init_schema_accepts_valid_sha512_hash_and_ssh_key(self):
+        request = CloudInitRequest.model_validate({
+            "username": "ubuntu",
+            "password_hash": "$6$rounds=5000$salt1234$" + "A" * 86,
+            "ssh_public_key": "ssh-ed25519 " + "A" * 44 + " test-key",
+        })
+        self.assertEqual(request.username, "ubuntu")
 
     def test_account_roles_quotas_suspension_and_audit(self):
         client = self.client
