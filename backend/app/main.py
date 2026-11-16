@@ -8,6 +8,7 @@ import os
 import secrets
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -117,11 +118,17 @@ class UserCreateRequest(BaseModel):
     password: str = Field(min_length=16, max_length=1024)
     role: str = Field(default="user", pattern=r"^(admin|user)$")
     vm_quota: int = Field(default=3, ge=0, le=1000)
+    cpu_quota_cores: int = Field(default=8, ge=0, le=4096)
+    memory_quota_mb: int = Field(default=16384, ge=0, le=4194304)
+    storage_quota_gb: int = Field(default=200, ge=0, le=1000000)
 
 
 class UserUpdateRequest(BaseModel):
     role: str = Field(pattern=r"^(admin|user)$")
     vm_quota: int = Field(ge=0, le=1000)
+    cpu_quota_cores: int = Field(default=8, ge=0, le=4096)
+    memory_quota_mb: int = Field(default=16384, ge=0, le=4194304)
+    storage_quota_gb: int = Field(default=200, ge=0, le=1000000)
     active: bool
 
 
@@ -209,7 +216,7 @@ def auth_logout(response: Response, user: dict[str, Any] = Depends(require_user)
 def list_users(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute("SELECT id,username,role,vm_quota,active,created_at FROM users ORDER BY id").fetchall()
+        rows = connection.execute("SELECT id,username,role,vm_quota,cpu_quota_cores,memory_quota_mb,storage_quota_gb,active,created_at FROM users ORDER BY id").fetchall()
     return {"items": [dict(row) for row in rows]}
 
 
@@ -217,11 +224,11 @@ def list_users(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]
 def create_user(request: UserCreateRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     try:
         with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-            cursor = connection.execute("INSERT INTO users(username,password_hash,role,vm_quota) VALUES(?,?,?,?)", (request.username, hash_password(request.password), request.role, request.vm_quota))
+            cursor = connection.execute("INSERT INTO users(username,password_hash,role,vm_quota,cpu_quota_cores,memory_quota_mb,storage_quota_gb) VALUES(?,?,?,?,?,?,?)", (request.username, hash_password(request.password), request.role, request.vm_quota, request.cpu_quota_cores, request.memory_quota_mb, request.storage_quota_gb))
             connection.commit()
     except sqlite3.IntegrityError: raise HTTPException(status_code=409, detail="Username already exists.") from None
     audit(DATABASE_PATH, admin, "user.create", request.username, f"role={request.role}; quota={request.vm_quota}")
-    return {"id": cursor.lastrowid, "username": request.username, "role": request.role, "vm_quota": request.vm_quota}
+    return {"id": cursor.lastrowid, "username": request.username, "role": request.role, "vm_quota": request.vm_quota, "cpu_quota_cores": request.cpu_quota_cores, "memory_quota_mb": request.memory_quota_mb, "storage_quota_gb": request.storage_quota_gb}
 
 
 @app.patch("/api/users/{user_id}", tags=["users"])
@@ -234,10 +241,10 @@ def update_user(user_id: int, request: UserUpdateRequest, admin: dict[str, Any] 
         if target[2] == "admin" and (request.role != "admin" or not request.active):
             count = connection.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]
             if count <= 1: raise HTTPException(status_code=400, detail="At least one active administrator must remain.")
-        connection.execute("UPDATE users SET role=?,vm_quota=?,active=? WHERE id=?", (request.role, request.vm_quota, int(request.active), user_id))
+        connection.execute("UPDATE users SET role=?,vm_quota=?,cpu_quota_cores=?,memory_quota_mb=?,storage_quota_gb=?,active=? WHERE id=?", (request.role, request.vm_quota, request.cpu_quota_cores, request.memory_quota_mb, request.storage_quota_gb, int(request.active), user_id))
         connection.commit()
     audit(DATABASE_PATH, admin, "user.update", target[1], f"role={request.role}; quota={request.vm_quota}; active={request.active}")
-    return {"id": user_id, "username": target[1], "role": request.role, "vm_quota": request.vm_quota, "active": request.active}
+    return {"id": user_id, "username": target[1], "role": request.role, "vm_quota": request.vm_quota, "cpu_quota_cores": request.cpu_quota_cores, "memory_quota_mb": request.memory_quota_mb, "storage_quota_gb": request.storage_quota_gb, "active": request.active}
 
 
 @app.post("/api/users/{user_id}/transfer-vm", tags=["users"])
@@ -343,17 +350,53 @@ async def get_monitor() -> dict[str, Any]:
 
 @app.post("/api/vms", tags=["instances"])
 async def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
-    if user["role"] != "admin":
-        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-            quota = connection.execute("SELECT vm_quota FROM users WHERE id=?", (user["id"],)).fetchone()[0]
-            used = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE user_id=?", (user["id"],)).fetchone()[0]
-        if quota >= 0 and used >= quota: raise HTTPException(status_code=403, detail="Your VM quota has been reached. Contact an administrator.")
-    result = await agent_request("POST", "/v1/vms", request.model_dump())
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-        connection.execute("INSERT OR REPLACE INTO vm_ownership(vm_name,user_id) VALUES(?,?)", (request.name, user["id"]))
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("PRAGMA busy_timeout=15000")
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM vm_ownership WHERE vm_name=?", (request.name,)).fetchone():
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="A VM with this name is already recorded.")
+        if user["role"] != "admin":
+            limits = connection.execute("SELECT vm_quota,cpu_quota_cores,memory_quota_mb,storage_quota_gb FROM users WHERE id=? AND active=1", (user["id"],)).fetchone()
+            if not limits:
+                connection.rollback(); raise HTTPException(status_code=403, detail="Account is inactive.")
+            used = connection.execute("SELECT COUNT(*),COALESCE(SUM(cpu_count),0),COALESCE(SUM(memory_mb),0),COALESCE(SUM(disk_gb),0) FROM vm_ownership WHERE user_id=?", (user["id"],)).fetchone()
+            requested = (1, request.cpu_count, request.memory_mb, request.disk_gb)
+            labels = ("VM", "CPU core", "MB memory", "GB storage")
+            for limit, current, amount, label in zip(limits, used, requested, labels):
+                if limit >= 0 and current + amount > limit:
+                    connection.rollback(); raise HTTPException(status_code=403, detail=f"Your {label} quota would be exceeded.")
+        job_id = str(uuid.uuid4())
+        connection.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb) VALUES(?,?,?,?,?)", (request.name, user["id"], request.cpu_count, request.memory_mb, request.disk_gb))
+        connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json,attempts) VALUES(?,?,?,'running',?,1)", (job_id, user["id"], request.name, json.dumps(request.model_dump())))
         connection.commit()
-    audit(DATABASE_PATH, user, "vm.create", request.name)
-    return result
+    try:
+        result = await agent_request("POST", "/v1/vms", request.model_dump())
+    except Exception as exc:
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            connection.execute("DELETE FROM vm_ownership WHERE vm_name=? AND user_id=?", (request.name, user["id"]))
+            connection.execute("UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc)[:1000], job_id))
+            connection.commit()
+        raise
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(result, default=str)[:20000], job_id))
+        connection.commit()
+    audit(DATABASE_PATH, user, "vm.create", request.name, f"job_id={job_id}")
+    return {**result, "provisioning_job_id": job_id}
+
+
+
+@app.get("/api/jobs/{job_id}", tags=["jobs"])
+def get_provisioning_job(job_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT id,user_id,vm_name,status,attempts,error,created_at,updated_at,result_json FROM provisioning_jobs WHERE id=?", (job_id,)).fetchone()
+    if not row or (user["role"] != "admin" and row["user_id"] != user["id"]):
+        raise HTTPException(status_code=404, detail="Provisioning job not found.")
+    item = dict(row)
+    item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
+    return item
+
 
 
 def authorize_vm(name: str, user: dict[str, Any]) -> None:

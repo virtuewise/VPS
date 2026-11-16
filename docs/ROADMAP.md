@@ -81,3 +81,7 @@
 - [ ] Complete threat modelling, dependency scanning, secret rotation, and external security review
 - [ ] Add resource enforcement, abuse controls, acceptable-use process, and operational monitoring
 - [ ] Document hardware, bandwidth, electricity, public-IP, and support costs honestly
+
+- [x] Customer VM, vCPU, memory and storage quotas with transactional allocation reservation.
+- [x] Durable provisioning execution records and owner-scoped job status lookup.
+- [ ] Detached durable worker queue, restart recovery and safe retry semantics.
