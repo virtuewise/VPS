@@ -43,7 +43,7 @@ The Console action currently returns a `virsh console VM_NAME` command for execu
 
 ## Cloud-init notes
 
-The node needs `cloud-localds`. The generated Ubuntu autoinstall seed contains the supplied SHA-512 crypt password hash and SSH public key. The private key must remain on the user's client. Test the exact Ubuntu Server ISO and guest firmware configuration before using it for important workloads.
+The node needs `cloud-localds`. The generated Ubuntu autoinstall seed contains the supplied SHA-512 crypt password hash and SSH public key, and installs/enables `qemu-guest-agent` for guest IP reporting. The private key must remain on the user's client. Test the exact Ubuntu Server ISO and guest firmware configuration before using it for important workloads.
 
 ## Validation status
 
