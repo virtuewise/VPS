@@ -38,7 +38,7 @@
 - [x] Experimental libvirt/KVM provider prototype behind the shared node-agent API
 - [ ] Real-host libvirt acceptance tests and provider conformance suite
 - [x] One-time node enrollment tokens (hashed at rest, 15-minute expiry, single use)
-- [ ] Agent identity, enrollment completion, and credential rotation
+- [x] Per-node credentials, authenticated heartbeat API, and administrator revocation (agent push loop and rotation remain open)
 - [ ] Mutual TLS between control plane and agents
 - [ ] Job queue for long-running VM operations
 - [ ] Node heartbeats and health status
@@ -63,7 +63,8 @@
 
 - [x] Draft plugin architecture, capability security model, and integration phases
 - [ ] Versioned plugin manifest schema and capability registry
-- [ ] Provider plugin interface and conformance suite
+- [x] Initial provider interface contract and developer starter guide
+- [ ] External provider SDK packaging and conformance suite
 - [ ] First-party MCP server for compatible AI clients (read-only tools first)
 - [ ] ChatGPT integration guide, OAuth/scoped authorization, and deployment packaging
 - [ ] Isolated plugin runtime, signing, health checks, and lifecycle management
