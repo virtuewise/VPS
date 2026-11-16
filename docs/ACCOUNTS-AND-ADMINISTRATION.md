@@ -43,6 +43,6 @@ Administrators can retrieve the most recent account audit events with `GET /api/
 - Non-admin users can create, view, start, stop, open the host console for, and delete only VMs recorded as theirs. Administrators can manage all VMs.
 - VMs that existed before ownership tracking was introduced remain visible to administrators only. Administrators can now transfer a recorded VM ownership row to an active customer using the dashboard transfer form; this does not migrate the VM between Hyper-V hosts.
 - The quota counts recorded VM ownership rows; it is not a CPU, RAM, disk-capacity or billing quota.
-- Password reset/change, email invitations, rate limiting, MFA, billing and resource-based quotas are not implemented.
+- Password reset/change, email invitations, MFA, billing and resource-based quotas are not implemented. Sign-in failures are throttled after five attempts per username and client IP in a rolling 15-minute window.
 - Existing installations keep the existing SQLite database. Back it up before upgrades.
 - Keep the dashboard loopback-only. This feature is a development foundation, not production-ready multi-tenant hosting.
