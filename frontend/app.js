@@ -32,7 +32,7 @@ async function loadSwitches() {
 function renderVMs(items) {
   const content = byId("vm-content");
   byId("vm-count").textContent = String(items.length);
-  byId("vm-summary").textContent = items.length ? "VMs on connected Hyper-V host" : "No VMs found on this node";
+  byId("vm-summary").textContent = items.length ? "VMs on connected virtualization node" : "No VMs found on this node";
   if (!items.length) { content.className="empty"; content.innerHTML='<div class="empty-icon">▣</div><b>No virtual machines found</b><p class="muted">Use the form above to create your first VM.</p>'; return; }
   content.className="vm-list";
   content.innerHTML=items.map(vm=>{
@@ -77,7 +77,7 @@ async function loadDashboard() {
     setCreateEnabled(agent.online);
     if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname)}</span><span>${escapeHtml(n.status)}</span></div>`).join("");}
     if(agent.online){const [vms]=await Promise.all([api("/api/vms"),loadSwitches()]);renderVMs(vms.items||[]);await loadMonitor();}
-    else{byId("vm-count").textContent="—";byId("vm-summary").textContent="Agent not connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Hyper-V agent is offline")}</b><p class="muted">Start the local agent and configure VPS_AGENT_URL and VPS_AGENT_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
+    else{byId("vm-count").textContent="—";byId("vm-summary").textContent="Agent not connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Node agent is offline")}</b><p class="muted">Start the node agent and configure VPS_AGENT_URL and VPS_AGENT_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
   } catch(error){byId("api-status").textContent="API unavailable";setCreateEnabled(false);notice(error.message);}
 }
 byId("create-vm-form").addEventListener("submit",async event=>{
