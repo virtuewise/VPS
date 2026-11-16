@@ -16,6 +16,7 @@ services:
       # Agent connection is intentionally opt-in. See docs/CONTROL-PLANE-AGENT.md.
       VPS_AGENT_URL: ${VPS_AGENT_URL:-}
       VPS_AGENT_TOKEN: ${VPS_AGENT_TOKEN:-}
+      VPS_MCP_READ_TOKEN: ${VPS_MCP_READ_TOKEN:-}
     volumes:
       - vps-data:/data
     restart: unless-stopped

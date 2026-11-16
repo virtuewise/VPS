@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "virtuewise-vps-mcp"
+version = "0.1.0"
+description = "Read-only Model Context Protocol server for VirtueWise VPS"
+requires-python = ">=3.11"
+dependencies = ["mcp==2.3.0"]
+
+[project.scripts]
+virtuewise-vps-mcp = "virtuewise_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["virtuewise_mcp"]

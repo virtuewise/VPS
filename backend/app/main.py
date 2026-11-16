@@ -34,7 +34,8 @@ SESSION_SECRET = os.getenv("VPS_SESSION_SECRET", "")
 SESSION_COOKIE_SECURE = os.getenv("VPS_SESSION_COOKIE_SECURE", "false").lower() == "true"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 SESSION_COOKIE = "vwps_session"
-app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.5.0")
+MCP_READ_TOKEN = os.getenv("VPS_MCP_READ_TOKEN", "")
+app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.6.0")
 _worker_task: asyncio.Task | None = None
 
 
@@ -238,7 +239,7 @@ class CreateVMRequest(BaseModel):
 
 @app.get("/api/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.5.0"}
+    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.6.0"}
 
 
 @app.get("/api/auth/session", tags=["authentication"])
@@ -534,6 +535,64 @@ def preview_node_placement(request: PlacementRequest, admin: dict[str, Any] = De
     if selected is None:
         raise HTTPException(status_code=409, detail="No fresh, online node has sufficient reported capacity.")
     return {"placement": selected, "reserved": False, "note": "Preview only; provisioning is not yet routed to multi-node agents."}
+
+
+def require_mcp_read_token(request: Request) -> None:
+    """Dedicated, read-only machine credential for the isolated MCP service."""
+    if request.method != "GET":
+        raise HTTPException(status_code=405, detail="MCP integration credential is read-only.")
+    if len(MCP_READ_TOKEN) < 32:
+        raise HTTPException(status_code=503, detail="MCP read credential is not configured on the control plane.")
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
+    if not supplied or not hmac.compare_digest(supplied, MCP_READ_TOKEN):
+        raise HTTPException(status_code=401, detail="MCP read credential is invalid.")
+
+
+@app.get("/api/integrations/mcp/health", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+async def mcp_health() -> dict[str, Any]:
+    result: dict[str, Any] = {"control_plane": "ok", "agent_configured": agent_configured(), "agent_online": False}
+    if agent_configured():
+        try:
+            agent = await agent_request("GET", "/health")
+            result["agent_online"] = agent.get("status") == "ok"
+            result["agent"] = agent
+        except HTTPException as exc:
+            result["agent_error"] = str(exc.detail)
+    return result
+
+
+@app.get("/api/integrations/mcp/nodes", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+def mcp_nodes() -> dict[str, Any]:
+    return list_nodes()
+
+
+@app.get("/api/integrations/mcp/nodes/{node_id}", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+def mcp_node_detail(node_id: int) -> dict[str, Any]:
+    for node in list_nodes()["items"]:
+        if node["id"] == node_id:
+            return node
+    raise HTTPException(status_code=404, detail="Node not found.")
+
+
+@app.get("/api/integrations/mcp/vms", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+async def mcp_vms() -> dict[str, Any]:
+    return await agent_request("GET", "/v1/vms")
+
+
+@app.get("/api/integrations/mcp/vms/{name}", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+async def mcp_vm_detail(name: str) -> dict[str, Any]:
+    inventory = await agent_request("GET", "/v1/vms")
+    items = inventory.get("items", []) if isinstance(inventory, dict) else inventory
+    for vm in items:
+        if isinstance(vm, dict) and vm.get("name") == name:
+            return vm
+    raise HTTPException(status_code=404, detail="Virtual machine not found.")
+
+
+@app.get("/api/integrations/mcp/resources", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
+async def mcp_resources() -> dict[str, Any]:
+    return await agent_request("GET", "/v1/monitor")
 
 
 @app.post("/api/nodes/enrollment-tokens", tags=["nodes"])

@@ -1,4 +1,4 @@
-﻿# VirtueWise VPS roadmap
+# VirtueWise VPS roadmap
 
 ## Milestone 1 â€” Control-plane foundation
 
@@ -66,8 +66,8 @@
 - [ ] Versioned plugin manifest schema and capability registry
 - [x] Initial provider interface contract and developer starter guide
 - [ ] External provider SDK packaging and conformance suite
-- [ ] First-party MCP server for compatible AI clients (read-only tools first)
-- [ ] ChatGPT integration guide, OAuth/scoped authorization, and deployment packaging
+- [x] First-party MCP server with six read-only infrastructure inspection tools and a dedicated scoped API credential
+- [ ] ChatGPT integration guide, per-customer delegated scopes/OAuth, and deployment packaging
 - [ ] Isolated plugin runtime, signing, health checks, and lifecycle management
 - [ ] Plugin SDK, sample plugins, and developer documentation
 

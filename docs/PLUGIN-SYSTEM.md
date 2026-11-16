@@ -44,7 +44,7 @@ A plugin must fail closed when its API version or required capability is unavail
 
 The intended integration is a first-party VirtueWise **Model Context Protocol (MCP) server**. MCP is the tool interface for compatible AI clients; it is not the retired legacy ChatGPT Plugins format.
 
-The MCP server will call the same authenticated public control-plane API used by the dashboard. It must not access SQLite directly or bypass authorization. Initial read-only tools should include:
+The initial MCP server is implemented in `mcp-server/` and calls dedicated authenticated `/api/integrations/mcp/*` control-plane routes. It does not access SQLite directly. A separate `VPS_MCP_READ_TOKEN` protects these endpoints; this credential grants infrastructure-wide read-only access and must be treated as an administrator secret. The MCP process defaults to stdio and rejects remote plain HTTP, redirects, unbounded responses, and paths outside the dedicated read-only API. Initial tools include:
 
 - `virtuewise_health`
 - `list_nodes`
@@ -55,7 +55,7 @@ The MCP server will call the same authenticated public control-plane API used by
 
 State-changing tools (create, start, stop, delete, network changes) are a later phase. They require explicit authorization, scoped credentials, destructive-action confirmation, idempotency, and audit records. Tool descriptions must state their effects clearly. No tool should expose arbitrary command execution.
 
-The MCP server should be independently installable, use environment-based configuration, support stdio for local clients and a separately secured HTTP transport where supported, and include integration tests with a mocked control plane.
+The MCP server is independently installable, uses environment-based configuration, and currently supports stdio for local clients. Its SDK v2 integration is tested in-memory with the official MCP Client and mocked control-plane calls. A network-hosted MCP transport, OAuth/per-customer delegated scopes, multi-node inventory aggregation, and write tools remain future work.
 
 ## Compatibility and release policy
 
@@ -70,9 +70,9 @@ The MCP server should be independently installable, use environment-based config
 
 1. Publish API conventions, plugin manifest schema, and capability vocabulary.
 2. Extract provider interface and add conformance tests.
-3. Build the MCP server with read-only tools.
+3. [x] Build the MCP server with read-only tools.
 4. Add plugin discovery, install/enable/disable, and health reporting.
 5. Add isolated plugin execution, signing, permissions, and lifecycle management.
 6. Add carefully scoped write tools and event-driven extensions.
 
-This document is a design contract, not a claim that the plugin runtime or MCP server has already been implemented.
+The provider plugin runtime remains a design contract; the read-only MCP server is implemented as documented above. Do not infer that third-party plugin execution or state-changing MCP tools are available.
