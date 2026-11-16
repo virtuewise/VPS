@@ -37,6 +37,10 @@ def initialize_tenancy(path: Path, admin_password: str, default_quota: int = 3) 
           id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id INTEGER,
           actor_username TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '',
           details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS login_attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, username_key TEXT NOT NULL,
+          client_ip TEXT NOT NULL, attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username_key,client_ip,attempted_at)")
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute("INSERT INTO users(username,password_hash,role,vm_quota) VALUES('admin',?,'admin',-1)", (hash_password(admin_password),))
         db.commit()
