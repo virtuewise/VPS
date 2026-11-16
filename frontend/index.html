@@ -100,6 +100,19 @@
         </form>
       </div>
       <div class="ownership-transfer">
+        <h4>Compute node enrollment</h4>
+        <p class="muted">Create a one-time enrollment token for a node. It expires after 15 minutes and is shown only once.</p>
+        <form id="node-enroll-form" class="create-form">
+          <div class="form-grid">
+            <label>Node name<input name="name" minlength="2" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="compute-01" required></label>
+            <label>Node hostname<input name="hostname" minlength="1" maxlength="253" placeholder="compute-01.example.internal" required></label>
+          </div>
+          <div class="form-actions"><button type="submit">Generate enrollment token</button></div>
+        </form>
+        <div id="node-enroll-once" class="mcp-token-once" hidden><b>Copy this enrollment token now. It expires in 15 minutes and cannot be retrieved again.</b><code id="node-enroll-value"></code><button id="node-enroll-copy" type="button" class="secondary">Copy token</button></div>
+        <div id="node-management-content" class="audit-list">Loading compute nodes.</div>
+      </div>
+      <div class="ownership-transfer">
         <h4>Scoped MCP credentials</h4>
         <p class="muted">Issue expiring, read-only integration tokens for customers or administrators. Customer tokens can see only VMs assigned to that account. The raw token is displayed once.</p>
         <form id="mcp-token-form" class="create-form">

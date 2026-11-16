@@ -775,8 +775,8 @@ async def delete_vm(name: str, confirm_name: str, delete_disks: bool = False, us
     return result
 
 
-@app.get("/api/nodes", tags=["nodes"], dependencies=[Depends(require_user)])
-def list_nodes() -> dict[str, list[dict[str, Any]]]:
+@app.get("/api/nodes", tags=["nodes"])
+def list_nodes(user: dict[str, Any] = Depends(require_user)) -> dict[str, list[dict[str, Any]]]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute("SELECT id,name,hostname,status,created_at,last_seen,resources_json,inventory_json FROM nodes ORDER BY id").fetchall()
@@ -789,6 +789,8 @@ def list_nodes() -> dict[str, list[dict[str, Any]]]:
         item["vm_count"] = len(inventory) if isinstance(inventory, list) else 0
         if item["status"] != "revoked" and (not item["last_seen"] or now-item["last_seen"] > 180):
             item["status"] = "offline"
+        if user["role"] != "admin":
+            item = {key: item[key] for key in ("id", "name", "status", "vm_count")}
         items.append(item)
     return {"items": items}
 

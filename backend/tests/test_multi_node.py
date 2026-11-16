@@ -134,6 +134,9 @@ class MultiNodeTests(unittest.TestCase):
             login = client.post("/api/auth/login", json={"username": "node-customer", "password": "node-customer-password-123"})
             self.assertEqual(login.status_code, 200, login.text)
             customer_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+            node_summary = client.get("/api/nodes", headers=customer_headers)
+            self.assertEqual(node_summary.status_code, 200, node_summary.text)
+            self.assertEqual(set(node_summary.json()["items"][0]), {"id", "name", "status", "vm_count"})
             inventory = client.get("/api/vms", headers=customer_headers)
             self.assertEqual(inventory.status_code, 200, inventory.text)
             self.assertEqual([item["name"] for item in inventory.json()["items"]], ["owned-vm"])

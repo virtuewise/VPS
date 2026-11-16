@@ -17,6 +17,9 @@ class DeveloperPortalTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("mcp-token-form", response.text)
         self.assertIn("mcp-token-copy", response.text)
+        self.assertIn("node-enroll-form", response.text)
+        self.assertIn("node-enroll-copy", response.text)
+        self.assertIn("node-management-content", response.text)
 
     def test_portal_assets_are_served(self):
         for path in ("/assets/developers.css", "/assets/developers.js"):

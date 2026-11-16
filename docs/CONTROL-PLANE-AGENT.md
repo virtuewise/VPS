@@ -7,7 +7,7 @@ VirtueWise supports two execution modes:
 
 ## 1. Enroll a node
 
-An administrator creates a single-use enrollment token from an authenticated control-plane session. Include the session cookie and CSRF header:
+An administrator creates a single-use enrollment token from the dashboard under **Administration ? Compute node enrollment**, or through the API. The dashboard displays the raw token once and provides a copy action. Administrators can also revoke nodes from the node-management list. Customer sessions receive only node IDs, names, status and VM counts; hostnames and telemetry are administrator-only. Include the session cookie and CSRF header:
 
 ```http
 POST /api/nodes/enrollment-tokens

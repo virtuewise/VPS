@@ -33,6 +33,7 @@
 - [ ] Lifecycle state reconciliation and operator recovery workflow
 - [x] Add initial multi-user RBAC, VM ownership, VM-count quotas, login throttling, and administrative audit view
 - [x] One-time secure node enrollment, hashed per-node credentials, administrator revocation and credential rotation endpoint (agent environment update/restart is manual)
+- [x] Dashboard node enrollment, one-time token display/copy and node revocation management
 - [ ] Mutual TLS and production-grade rate limiting
 
 ## Milestone 3 â€” Linux provider and secure node enrollment

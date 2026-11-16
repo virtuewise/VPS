@@ -92,9 +92,10 @@ async function loadAdminPanel() {
   for (const u of result.items) if (u.active) tokenOwner.add(new Option(`${u.username} (${u.role})`, String(u.id)));
   updateMcpScopeOptions();
   byId('users-content').innerHTML = result.items.map(u => '<div class="user-row" data-user-id="'+u.id+'"><b>'+escapeHtml(u.username)+'</b><select data-field="role"><option value="user" '+(u.role==='user'?'selected':'')+'>Customer</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrator</option></select><input data-field="quota" type="number" min="0" max="1000" value="'+u.vm_quota+'"><select data-field="active"><option value="true" '+(u.active?'selected':'')+'>Active</option><option value="false" '+(!u.active?'selected':'')+'>Suspended</option></select><button class="secondary" data-user-action="save">Save</button><button class="danger" data-user-action="delete" '+(u.id===currentUser.id?'disabled':'')+'>Delete</button></div>').join('') || '<p>No accounts yet.</p>';
-  const [log,tokens] = await Promise.all([api('/api/audit?limit=30'), api('/api/mcp/tokens')]);
+  const [log,tokens,nodes] = await Promise.all([api('/api/audit?limit=30'), api('/api/mcp/tokens'), api('/api/nodes')]);
   byId('audit-content').innerHTML = log.items.map(e => '<div class="audit-row"><b>'+escapeHtml(e.action)+'</b> · '+escapeHtml(e.actor_username)+' · '+escapeHtml(e.target)+' <span class="muted">'+escapeHtml(e.created_at)+'</span></div>').join('') || 'No events recorded.';
   byId('mcp-tokens-content').innerHTML = tokens.items.map(t => '<div class="mcp-token-row"><div><b>'+escapeHtml(t.label)+'</b><span class="muted">'+escapeHtml(t.username)+' ? '+escapeHtml(t.scopes.join(', '))+' ? expires '+escapeHtml(new Date(t.expires_at*1000).toLocaleDateString())+'</span><span class="muted">'+(t.revoked_at?'Revoked':t.expires_at*1000<Date.now()?'Expired':'Active')+'</span></div><button type="button" class="danger" data-mcp-token-revoke="'+t.id+'" '+(t.revoked_at?'disabled':'')+'>Revoke</button></div>').join('') || 'No scoped MCP tokens issued.';
+  byId('node-management-content').innerHTML = nodes.items.map(n => '<div class="mcp-token-row"><div><b>'+escapeHtml(n.name)+'</b><span class="muted">'+escapeHtml(n.hostname)+' ? '+escapeHtml(n.status)+' ? '+Number(n.vm_count||0)+' VMs ? last heartbeat '+escapeHtml(n.last_seen?new Date(n.last_seen*1000).toLocaleString():'never')+'</span></div><button type="button" class="danger" data-node-revoke="'+n.id+'" '+(n.status==='revoked'?'disabled':'')+'>Revoke</button></div>').join('') || 'No compute nodes enrolled.';
 }
 
 async function loadDashboard() {
@@ -105,9 +106,9 @@ async function loadDashboard() {
     byId("agent-status").textContent=agent.online?"Online":"Offline";
     byId("agent-status").className=agent.online?"online":"offline";
     setCreateEnabled(agent.online);
-    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname)}</span><span>${escapeHtml(n.status)} ? ${Number(n.vm_count||0)} VMs</span></div>`).join("");}
+    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname||"Compute node")}</span><span>${escapeHtml(n.status)} ? ${Number(n.vm_count||0)} VMs</span></div>`).join("");}
     if(agent.online){const [vms]=await Promise.all([api("/api/vms"),loadSwitches()]);renderVMs(vms.items||[]);await loadMonitor();}
-    else{await loadSwitches();byId("vm-count").textContent="?";byId("vm-summary").textContent="No nodes currently connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Node agent is offline")}</b><p class="muted">Start an enrolled node agent with VPS_CONTROL_PLANE_URL, VPS_NODE_ID and VPS_NODE_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
+    else{byId("vm-count").textContent="?";byId("vm-summary").textContent="No nodes currently connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Node agent is offline")}</b><p class="muted">Start an enrolled node agent with VPS_CONTROL_PLANE_URL, VPS_NODE_ID and VPS_NODE_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
   } catch(error){byId("api-status").textContent="API unavailable";setCreateEnabled(false);notice(error.message);}
 }
 byId("create-vm-form").addEventListener("submit",async event=>{
@@ -129,6 +130,26 @@ byId("create-vm-form").addEventListener("submit",async event=>{
 });
 byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
 byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });
+byId('node-enroll-form').addEventListener('submit', async event => {
+  event.preventDefault(); const form=event.currentTarget; if(!form.reportValidity()) return;
+  const values=new FormData(form);
+  try {
+    const result=await api('/api/nodes/enrollment-tokens',{method:'POST',body:JSON.stringify({name:String(values.get('name')).trim(),hostname:String(values.get('hostname')).trim()})});
+    byId('node-enroll-value').textContent=result.token; byId('node-enroll-once').hidden=false;
+    notice('One-time node enrollment token created. Deliver it securely; it expires in 15 minutes.'); form.reset(); await loadAdminPanel();
+  } catch(error){notice(error.message);}
+});
+byId('node-enroll-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(byId('node-enroll-value').textContent); notice('Enrollment token copied.'); }
+  catch { notice('Clipboard unavailable. Select and copy the token manually.'); }
+});
+byId('node-management-content').addEventListener('click', async event => {
+  const button=event.target.closest('button[data-node-revoke]'); if(!button)return;
+  if(!confirm('Revoke this node credential immediately? It will no longer be able to report telemetry or receive commands.'))return;
+  try { await api('/api/nodes/'+button.dataset.nodeRevoke+'/revoke',{method:'POST'}); notice('Node credential revoked.'); await loadAdminPanel(); await loadDashboard(); }
+  catch(error){notice(error.message);}
+});
+
 byId('mcp-token-form').addEventListener('submit', async event => {
   event.preventDefault(); const form=event.currentTarget; if(!form.reportValidity()) return;
   const values=new FormData(form), scopes=[...form.querySelectorAll('input[name="scopes"]:checked')].map(input=>input.value);
