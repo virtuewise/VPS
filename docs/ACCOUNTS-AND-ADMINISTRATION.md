@@ -46,3 +46,15 @@ Administrators can retrieve the most recent account audit events with `GET /api/
 - Password reset/change, email invitations, MFA, billing and resource-based quotas are not implemented. Sign-in failures are throttled after five attempts per username and client IP in a rolling 15-minute window.
 - Existing installations keep the existing SQLite database. Back it up before upgrades.
 - Keep the dashboard loopback-only. This feature is a development foundation, not production-ready multi-tenant hosting.
+
+
+## Run account API tests
+
+From the repository root on Windows:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+The integration test exercises administrator login, CSRF enforcement, account creation, customer role isolation, VM-count quota rejection, account suspension, deletion safeguards, audit access and sign-in throttling. It uses a temporary SQLite database and does not contact a Hyper-V host.
