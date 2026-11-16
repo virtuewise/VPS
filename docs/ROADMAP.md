@@ -28,12 +28,14 @@
 - [ ] Test cloud-init against supported Ubuntu Server ISO versions
 - [x] Single-administrator login, signed expiring sessions and CSRF protection for control-plane APIs
 - [x] Bind Docker development port to localhost by default
-- [ ] Add lifecycle state reconciliation and audit log
-- [ ] Secure multi-node enrollment, mutual TLS, multi-user RBAC, rate limiting and audit logging
+- [x] Add administrative audit events for authentication, accounts, ownership, and VM lifecycle requests
+- [ ] Add lifecycle state reconciliation and durable operation history
+- [x] Add initial multi-user RBAC, VM ownership, VM-count quotas, login throttling, and administrative audit view
+- [ ] Secure node enrollment, mutual TLS, token rotation, and production-grade rate limiting
 
 ## Milestone 3 — Linux provider and secure node enrollment
 
-- [ ] libvirt/KVM provider
+- [ ] libvirt/KVM provider with a provider-neutral node contract and conformance tests
 - [ ] One-time node enrollment tokens and key rotation
 - [ ] Mutual TLS between control plane and agents
 - [ ] Job queue for long-running VM operations
@@ -49,7 +51,19 @@
 
 ## Milestone 5 — Multi-tenant hosting
 
-- [ ] User accounts, roles, and permissions
-- [ ] Quotas, usage tracking, and audit events
+- [x] Initial customer accounts, administrator/customer roles, ownership checks, and VM-count quotas
+- [ ] Resource-based quotas, usage metering, billing, and customer self-service password recovery
 - [ ] Multi-node scheduler and placement policies
 - [ ] Backups, restore, and operational alerts
+
+## Engineering gate — before public hosting
+
+- [ ] Run the complete backend and agent test suites on a clean Windows 11 Pro/Enterprise host
+- [ ] Validate VM create/start/stop/console/network/delete against real Hyper-V
+- [ ] Validate cloud-init on each explicitly supported Ubuntu Server ISO release
+- [ ] Add rollback/cleanup for partially completed VM provisioning
+- [ ] Add durable jobs, retries, idempotency keys, and lifecycle reconciliation
+- [ ] Add encrypted backups and tested restore procedures
+- [ ] Complete threat modelling, dependency scanning, secret rotation, and external security review
+- [ ] Add resource enforcement, abuse controls, acceptable-use process, and operational monitoring
+- [ ] Document hardware, bandwidth, electricity, public-IP, and support costs honestly
