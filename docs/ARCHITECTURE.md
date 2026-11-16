@@ -26,7 +26,7 @@ Node agent (least privilege)
   +---- isolated virtual networks
 ```
 
-The control plane never runs arbitrary host commands or mounts the host Docker socket. Node agents expose only typed, allow-listed operations and validate requests before executing them. Multi-process queue coordination, mutual TLS, external security review and real-host provider certification remain open.
+The control plane never runs arbitrary host commands or mounts the host Docker socket. Node agents expose only typed, allow-listed operations and validate requests before executing them. Same-host multi-process queue coordination now uses SQLite transactional claims and expiring worker/node-command leases. A multi-host distributed queue backend, mutual TLS, external security review and real-host provider certification remain open.
 
 ## Development stages
 

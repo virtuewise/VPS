@@ -60,7 +60,7 @@ Use the administrator's **Customer accounts** panel to create customers, set VM-
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
 - The dashboard requires a configured administrator password and session-signing secret. Customer accounts have ownership checks and VM/CPU/RAM/storage quotas. Billing, MFA, password recovery and production hardening remain outstanding.
 - The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
-- Node enrollment uses single-use expiring credentials, per-node tokens, heartbeats and administrator revocation. Mutual TLS, multi-process queue coordination, external security review and production-grade rate limiting remain outstanding.
+- Node enrollment uses single-use expiring credentials, per-node tokens, heartbeats and administrator revocation. Same-host multi-process queue coordination uses SQLite transactional claims and expiring leases. Mutual TLS, a multi-host queue backend, external security review and production-grade rate limiting remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
 - Cloud-init requires a compatible Ubuntu Server ISO and Windows ADK oscdimg.exe. Test unattended installation in a disposable VM first.
 - Guest IP reporting depends on Hyper-V integration services and guest network configuration.

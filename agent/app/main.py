@@ -23,9 +23,10 @@ if len(AGENT_TOKEN) < 32:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     config = heartbeat_config()
+    command_state = {"active_command_id": None}
     tasks = [
-        asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.5.0", PROVIDER_MANIFEST.capabilities)),
-        asyncio.create_task(node_command_loop(config, hyperv)),
+        asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.5.0", PROVIDER_MANIFEST.capabilities, command_state)),
+        asyncio.create_task(node_command_loop(config, hyperv, command_state)),
     ] if config else []
     try:
         yield

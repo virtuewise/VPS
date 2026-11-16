@@ -40,6 +40,9 @@ MCP_SCOPES = {"health.read", "vms.read", "nodes.read", "resources.read"}
 MCP_ADMIN_SCOPES = {"nodes.read", "resources.read"}
 app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.10.0")
 _worker_task: asyncio.Task | None = None
+WORKER_INSTANCE_ID = uuid.uuid4().hex
+NODE_COMMAND_LEASE_SECONDS = 180
+LEGACY_WORKER_LEASE_SECONDS = 60
 
 
 def initialize_database() -> None:
@@ -67,6 +70,8 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE nodes ADD COLUMN switches_seen INTEGER")
         if "inventory_seen" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN inventory_seen INTEGER")
+        if "heartbeat_interval_seconds" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 60")
         connection.execute("""CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL, hostname TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -85,9 +90,17 @@ def initialize_database() -> None:
             user_id INTEGER, job_id TEXT, kind TEXT NOT NULL,
             payload_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),
             attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT, error TEXT,
+            claimed_at INTEGER, lease_expires_at INTEGER,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        command_columns = {row[1] for row in connection.execute("PRAGMA table_info(node_commands)").fetchall()}
+        if "claimed_at" not in command_columns:
+            connection.execute("ALTER TABLE node_commands ADD COLUMN claimed_at INTEGER")
+        if "lease_expires_at" not in command_columns:
+            connection.execute("ALTER TABLE node_commands ADD COLUMN lease_expires_at INTEGER")
+        connection.execute("UPDATE node_commands SET claimed_at=COALESCE(claimed_at,CAST(strftime('%s','now') AS INTEGER)),lease_expires_at=COALESCE(lease_expires_at,CAST(strftime('%s','now') AS INTEGER)+180) WHERE status='running'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_queue ON node_commands(node_id,status,created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_lease ON node_commands(status,lease_expires_at)")
         connection.execute("""CREATE TABLE IF NOT EXISTS managed_networks (
             node_id INTEGER NOT NULL REFERENCES nodes(id), name TEXT NOT NULL,
             mode TEXT NOT NULL CHECK(mode IN ('isolated','nat')), cidr TEXT,
@@ -104,19 +117,52 @@ def initialize_database() -> None:
         connection.commit()
 
 
+def reap_expired_work(now: int | None = None) -> dict[str, int]:
+    """Fail only work whose explicit worker or node-command lease has expired."""
+    current = int(time.time()) if now is None else int(now)
+    expired_commands: list[tuple[str, str | None, int]] = []
+    expired_legacy: list[tuple[str, str]] = []
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("PRAGMA busy_timeout=15000")
+        connection.execute("BEGIN IMMEDIATE")
+        expired_commands = connection.execute("""SELECT id,job_id,node_id FROM node_commands
+            WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?""", (current,)).fetchall()
+        for command_id, job_id, node_id in expired_commands:
+            cursor = connection.execute("""UPDATE node_commands SET status='failed',
+                error='Node command lease expired; provider outcome must be reconciled.',
+                lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='running' AND lease_expires_at<=?""", (command_id, current))
+            if cursor.rowcount == 1 and job_id:
+                connection.execute("""UPDATE provisioning_jobs SET status='failed',
+                    error='Node command lease expired; provider outcome is unknown. Reconcile against a fresh node inventory.',
+                    reconciliation_status='pending',worker_lease_owner=NULL,worker_lease_expires_at=NULL,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'""", (job_id,))
+        expired_legacy = connection.execute("""SELECT id,vm_name FROM provisioning_jobs
+            WHERE status='running' AND node_id IS NULL AND worker_lease_expires_at IS NOT NULL
+            AND worker_lease_expires_at<=?""", (current,)).fetchall()
+        for job_id, vm_name in expired_legacy:
+            connection.execute("""UPDATE provisioning_jobs SET status='failed',
+                error='Legacy provisioning worker lease expired; provider outcome is unknown and requires manual host inspection.',
+                reconciliation_status='manual_required',reconciliation_note='Legacy single-agent jobs cannot be verified through enrolled-node inventory.',
+                worker_lease_owner=NULL,worker_lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='running' AND node_id IS NULL AND worker_lease_expires_at<=?""", (job_id, current))
+        connection.commit()
+    for command_id, job_id, node_id in expired_commands:
+        audit(DATABASE_PATH, {"id": None, "username": "system"}, "node.command.lease_expired", command_id,
+              f"node_id={node_id}; job_id={job_id or ''}")
+    for job_id, vm_name in expired_legacy:
+        audit(DATABASE_PATH, {"id": None, "username": "system"}, "provisioning.legacy_lease_expired", vm_name, f"job_id={job_id}")
+    return {"node_commands": len(expired_commands), "legacy_jobs": len(expired_legacy)}
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
-    global _worker_task
+    global _worker_task, WORKER_INSTANCE_ID
+    WORKER_INSTANCE_ID = uuid.uuid4().hex
     initialize_database()
-    # A process may have died after dispatching a request to the agent. Do not
-    # blindly replay those jobs: the VM may already exist on the provider.
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-        connection.execute("UPDATE node_commands SET status='failed',error='Node command was interrupted by control-plane restart; reconcile before retrying.',updated_at=CURRENT_TIMESTAMP WHERE status='running'")
-        connection.execute("""UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP
-            WHERE status='running' AND NOT EXISTS (
-                SELECT 1 FROM node_commands c WHERE c.job_id=provisioning_jobs.id AND c.status='queued')""",
-            ("Worker stopped while this job was running. Provider outcome is unknown; reconcile the VM on the node before retrying.",))
-        connection.commit()
+    # Active work survives an API process restart. Only expired explicit leases
+    # are failed; provider operations are never replayed automatically.
+    reap_expired_work()
     _worker_task = asyncio.create_task(provisioning_worker())
 
 
@@ -158,8 +204,13 @@ def scheduler_node_snapshot(connection: sqlite3.Connection) -> list[dict[str, An
 
 
 async def provisioning_worker() -> None:
-    """Dispatch durable jobs to resource-eligible enrolled nodes or the legacy agent."""
+    """Dispatch durable jobs with atomic claims and explicit worker leases."""
+    next_reap = 0.0
     while True:
+        monotonic_now = asyncio.get_running_loop().time()
+        if monotonic_now >= next_reap:
+            reap_expired_work()
+            next_reap = monotonic_now + 5.0
         job = None
         with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
             connection.execute("PRAGMA busy_timeout=15000")
@@ -178,13 +229,14 @@ async def provisioning_worker() -> None:
                         command_payload = {key: value for key, value in payload.items() if key not in {"provider", "node_id"}}
                         connection.execute("INSERT INTO node_commands(id,node_id,user_id,job_id,kind,payload_json,status) VALUES(?,?,?,?,?,?, 'queued')",
                                            (command_id, node_id, row[1], row[0], "vm.create", json.dumps(command_payload)))
-                        connection.execute("UPDATE provisioning_jobs SET status='running',attempts=attempts+1,node_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'", (node_id, row[0]))
+                        connection.execute("UPDATE provisioning_jobs SET status='running',attempts=attempts+1,node_id=?,worker_lease_owner=NULL,worker_lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'", (node_id, row[0]))
                         connection.execute("UPDATE vm_ownership SET node_id=? WHERE vm_name=?", (node_id, payload["name"]))
                         job = ("node", row[0], command_id)
                 elif agent_configured():
                     payload.pop("provider", None)
                     payload.pop("node_id", None)
-                    cursor = connection.execute("UPDATE provisioning_jobs SET status='running',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'", (row[0],))
+                    cursor = connection.execute("UPDATE provisioning_jobs SET status='running',attempts=attempts+1,worker_lease_owner=?,worker_lease_expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'",
+                                                (WORKER_INSTANCE_ID, int(time.time())+LEGACY_WORKER_LEASE_SECONDS, row[0]))
                     if cursor.rowcount == 1:
                         job = ("legacy", row[0], payload)
             connection.commit()
@@ -202,11 +254,13 @@ async def provisioning_worker() -> None:
             raise
         except Exception as exc:
             with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-                connection.execute("UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'", (f"{type(exc).__name__}: {str(exc)[:900]}", job_id))
+                connection.execute("UPDATE provisioning_jobs SET status='failed',error=?,worker_lease_owner=NULL,worker_lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND worker_lease_owner=?",
+                                    (f"{type(exc).__name__}: {str(exc)[:900]}", job_id, WORKER_INSTANCE_ID))
                 connection.commit()
         else:
             with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-                connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,reconciliation_status='not_required',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'", (json.dumps(result, default=str)[:20000], job_id))
+                connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,reconciliation_status='not_required',worker_lease_owner=NULL,worker_lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND worker_lease_owner=?",
+                                    (json.dumps(result, default=str)[:20000], job_id, WORKER_INSTANCE_ID))
                 connection.commit()
             with closing(sqlite3.connect(DATABASE_PATH)) as connection:
                 owner = connection.execute("SELECT j.user_id,j.vm_name,u.username FROM provisioning_jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", (job_id,)).fetchone()
@@ -299,6 +353,8 @@ class NodeHeartbeatRequest(BaseModel):
     capabilities: list[str] | None = Field(default=None, max_length=32)
     inventory: list[dict[str, Any]] | None = Field(default=None, max_length=1000)
     switches: list[dict[str, Any]] | None = Field(default=None, max_length=500)
+    active_command_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    heartbeat_interval_seconds: int | None = Field(default=None, ge=15, le=3600)
 
     @field_validator("capabilities")
     @classmethod
@@ -1226,11 +1282,18 @@ def node_heartbeat(node_id: int, request: Request, payload: NodeHeartbeatRequest
         raise HTTPException(status_code=413, detail="Node inventory exceeds the 2 MB heartbeat limit.")
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         authenticate_node(connection, node_id, request)
+        heartbeat_interval = int(body.get("heartbeat_interval_seconds") or 60)
+        command_lease_seconds = max(NODE_COMMAND_LEASE_SECONDS, min(10800, heartbeat_interval*3))
+        active_command_id = body.get("active_command_id")
+        if active_command_id:
+            connection.execute("UPDATE node_commands SET lease_expires_at=? WHERE id=? AND node_id=? AND status='running'",
+                               (now+command_lease_seconds, active_command_id, node_id))
         cursor = connection.execute("""UPDATE nodes SET status='online',last_seen=?,resources_json=?,
             inventory_json=COALESCE(?,inventory_json),inventory_seen=CASE WHEN ? IS NULL THEN inventory_seen ELSE ? END,
-            switches_json=COALESCE(?,switches_json),switches_seen=CASE WHEN ? IS NULL THEN switches_seen ELSE ? END
+            switches_json=COALESCE(?,switches_json),switches_seen=CASE WHEN ? IS NULL THEN switches_seen ELSE ? END,
+            heartbeat_interval_seconds=COALESCE(?,heartbeat_interval_seconds)
             WHERE id=?""", (now, json.dumps(resources, separators=(",", ":")), inventory_json, inventory_json, now,
-                               switches_json, switches_json, now, node_id))
+                               switches_json, switches_json, now, body.get("heartbeat_interval_seconds"), node_id))
         connection.commit()
         if cursor.rowcount != 1:
             raise HTTPException(status_code=401, detail="Node identity is invalid or revoked.")
@@ -1248,7 +1311,12 @@ def claim_node_command(node_id: int, request: Request) -> dict[str, Any]:
         if not row:
             connection.commit()
             return {"command": None}
-        cursor = connection.execute("UPDATE node_commands SET status='running',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'", (row[0],))
+        now = int(time.time())
+        heartbeat_row = connection.execute("SELECT heartbeat_interval_seconds FROM nodes WHERE id=?", (node_id,)).fetchone()
+        interval = int(heartbeat_row[0]) if heartbeat_row else 60
+        lease_seconds = max(NODE_COMMAND_LEASE_SECONDS, min(10800, interval*3))
+        cursor = connection.execute("UPDATE node_commands SET status='running',attempts=attempts+1,claimed_at=?,lease_expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'",
+                                    (now, now+lease_seconds, row[0]))
         connection.commit()
         if cursor.rowcount != 1:
             return {"command": None}
@@ -1278,7 +1346,7 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
         if not row:
             connection.rollback()
             raise HTTPException(status_code=404, detail="Running node command not found.")
-        connection.execute("UPDATE node_commands SET status=?,result_json=?,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        connection.execute("UPDATE node_commands SET status=?,result_json=?,error=?,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (completion.status, result_json, completion.error[:1000] if completion.error else None, command_id))
         if completion.status == "succeeded" and inventory_snapshot is not None:
             connection.execute("UPDATE nodes SET inventory_json=?,inventory_seen=? WHERE id=?",
@@ -1519,7 +1587,7 @@ def revoke_node(node_id: int, admin: dict[str, Any] = Depends(require_admin)) ->
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         cursor = connection.execute("UPDATE nodes SET status='revoked',token_hash=NULL WHERE id=?", (node_id,))
         if cursor.rowcount == 1:
-            connection.execute("UPDATE node_commands SET status='failed',error='Node credential revoked by administrator.',updated_at=CURRENT_TIMESTAMP WHERE node_id=? AND status IN ('queued','running')", (node_id,))
+            connection.execute("UPDATE node_commands SET status='failed',error='Node credential revoked by administrator.',lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE node_id=? AND status IN ('queued','running')", (node_id,))
             connection.execute("UPDATE provisioning_jobs SET status='failed',error='Assigned node was revoked; reconcile provider state before retrying.',updated_at=CURRENT_TIMESTAMP WHERE node_id=? AND status='running'", (node_id,))
         connection.commit()
     if cursor.rowcount != 1:

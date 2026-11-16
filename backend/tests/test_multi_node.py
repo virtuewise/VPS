@@ -277,6 +277,65 @@ class MultiNodeTests(unittest.TestCase):
             remaining_assignments = db.execute("SELECT COUNT(*) FROM tenant_network_assignments WHERE user_id=?", (customer2["id"],)).fetchone()[0]
         self.assertEqual(remaining_assignments, 0)
 
+    def test_node_command_leases_survive_restart_and_expire_only_after_heartbeat_stops(self):
+        with TestClient(main.app) as client:
+            headers = self._login(client)
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "hyperv", "cpu_total": 8, "cpu_used": 0.1,
+                "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20,
+                "inventory": [], "switches": [], "heartbeat_interval_seconds": 300,
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            queued = client.post("/api/vms", headers=headers, json={
+                "name": "leased-node-vm", "provider": "hyperv", "iso_path": "C:\\ISO\\ubuntu.iso",
+                "memory_mb": 2048, "disk_gb": 30, "cpu_count": 2, "node_id": node_id,
+            })
+            self.assertEqual(queued.status_code, 202, queued.text)
+            job_id = queued.json()["provisioning_job_id"]
+            deadline = time.time() + 5
+            command = None
+            while time.time() < deadline:
+                with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                    command = db.execute("SELECT id,status FROM node_commands WHERE job_id=?", (job_id,)).fetchone()
+                if command:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(command)
+            claimed = client.post(f"/api/nodes/{node_id}/commands/claim", headers=node_headers)
+            self.assertEqual(claimed.status_code, 200, claimed.text)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                lease_before = db.execute("SELECT lease_expires_at FROM node_commands WHERE id=?", (command[0],)).fetchone()[0]
+            self.assertGreaterEqual(lease_before-int(time.time()), 890)
+            self.assertEqual(main.reap_expired_work(now=lease_before-1)["node_commands"], 0)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                self.assertEqual(db.execute("SELECT status FROM provisioning_jobs WHERE id=?", (job_id,)).fetchone()[0], "running")
+            inactive_heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={"provider": "hyperv", "heartbeat_interval_seconds": 300})
+            self.assertEqual(inactive_heartbeat.status_code, 200, inactive_heartbeat.text)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                lease_without_active_id = db.execute("SELECT lease_expires_at FROM node_commands WHERE id=?", (command[0],)).fetchone()[0]
+            self.assertEqual(lease_without_active_id, lease_before)
+            time.sleep(1.05)
+            renewed = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "hyperv", "active_command_id": command[0], "heartbeat_interval_seconds": 300
+            })
+            self.assertEqual(renewed.status_code, 200, renewed.text)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                lease_after = db.execute("SELECT lease_expires_at FROM node_commands WHERE id=?", (command[0],)).fetchone()[0]
+            self.assertGreater(lease_after, lease_before)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                db.execute("UPDATE node_commands SET lease_expires_at=? WHERE id=?", (int(time.time())-1, command[0]))
+                db.commit()
+            reaped = main.reap_expired_work()
+            self.assertEqual(reaped["node_commands"], 1)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                command_status = db.execute("SELECT status FROM node_commands WHERE id=?", (command[0],)).fetchone()[0]
+                job_status = db.execute("SELECT status,reconciliation_status FROM provisioning_jobs WHERE id=?", (job_id,)).fetchone()
+            self.assertEqual(command_status, "failed")
+            self.assertEqual(job_status, ("failed", "pending"))
+
     def test_vm_provisioning_idempotency_returns_original_job_and_rejects_payload_reuse(self):
         with TestClient(main.app) as client:
             headers = self._login(client)

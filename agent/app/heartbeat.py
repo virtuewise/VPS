@@ -34,7 +34,8 @@ def heartbeat_config(env: dict[str, str] | None = None) -> tuple[str, int, str, 
 
 
 def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: list[dict] | None = None,
-                      switches: list[dict] | None = None, capabilities: list[str] | None = None) -> dict:
+                      switches: list[dict] | None = None, capabilities: list[str] | None = None,
+                      active_command_id: str | None = None, heartbeat_interval_seconds: int | None = None) -> dict:
     total = int(monitor.get("memory_total_mb") or 0)
     free = int(monitor.get("memory_free_mb") or 0)
     storage_total = float(monitor.get("storage_total_gb") or 0)
@@ -48,11 +49,13 @@ def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: lis
         **({"capabilities": capabilities} if capabilities is not None else {}),
         **({"inventory": inventory} if inventory is not None else {}),
         **({"switches": switches} if switches is not None else {}),
+        **({"active_command_id": active_command_id} if active_command_id is not None else {}),
+        **({"heartbeat_interval_seconds": heartbeat_interval_seconds} if heartbeat_interval_seconds is not None else {}),
     }
 
 
 async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_name: str, version: str,
-                         capabilities: list[str] | None = None) -> None:
+                         capabilities: list[str] | None = None, command_state: dict | None = None) -> None:
     url, node_id, token, interval = config
     endpoint = f"{url}/api/nodes/{node_id}/heartbeat"
     backoff = 5
@@ -70,7 +73,9 @@ async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_n
                 except Exception as exc:
                     log.warning("Node switch refresh failed (%s); retaining previous snapshot", type(exc).__name__)
                     switches = None
-                payload = heartbeat_payload(monitor, provider_name, version, inventory, switches, capabilities)
+                active_command_id = command_state.get("active_command_id") if command_state else None
+                payload = heartbeat_payload(monitor, provider_name, version, inventory, switches, capabilities,
+                                            active_command_id, interval)
                 response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {token}"})
                 response.raise_for_status()
                 backoff = 5
@@ -173,7 +178,7 @@ async def execute_node_command(provider, kind: str, payload: dict):
     return result
 
 
-async def node_command_loop(config: tuple[str, int, str, int], provider) -> None:
+async def node_command_loop(config: tuple[str, int, str, int], provider, command_state: dict | None = None) -> None:
     """Poll for durable node commands over the node's authenticated outbound channel."""
     url, node_id, token, interval = config
     base = f"{url}/api/nodes/{node_id}/commands"
@@ -186,20 +191,31 @@ async def node_command_loop(config: tuple[str, int, str, int], provider) -> None
                 response.raise_for_status()
                 command = response.json().get("command")
                 if not command:
+                    if command_state is not None:
+                        command_state["active_command_id"] = None
                     backoff = 2
                     await asyncio.sleep(min(5, max(1, interval // 12)))
                     continue
+                if command_state is not None:
+                    command_state["active_command_id"] = command["id"]
                 try:
-                    result = await execute_node_command(provider, command["kind"], command["payload"])
-                    json.dumps(result, allow_nan=False)
-                    completion = {"status": "succeeded", "result": result}
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    log.warning("Node command failed (%s)", type(exc).__name__)
-                    completion = {"status": "failed", "error": f"{type(exc).__name__}: provider operation failed"}
-                complete = await client.post(base + f"/{command['id']}/complete", json=completion, headers=headers)
-                complete.raise_for_status()
+                    try:
+                        result = await execute_node_command(provider, command["kind"], command["payload"])
+                        json.dumps(result, allow_nan=False)
+                        completion = {"status": "succeeded", "result": result}
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        log.warning("Node command failed (%s)", type(exc).__name__)
+                        completion = {"status": "failed", "error": f"{type(exc).__name__}: provider operation failed"}
+                    complete = await client.post(base + f"/{command['id']}/complete", json=completion, headers=headers)
+                    complete.raise_for_status()
+                finally:
+                    # If completion delivery fails, stop renewing this lease. The control plane
+                    # will reconcile the provider result rather than treating a restarted agent
+                    # as if it still owned the in-flight operation.
+                    if command_state is not None:
+                        command_state["active_command_id"] = None
                 backoff = 2
             except asyncio.CancelledError:
                 raise

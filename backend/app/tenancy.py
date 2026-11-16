@@ -61,7 +61,8 @@ def initialize_tenancy(path: Path, admin_password: str, default_quota: int = 3) 
             db.execute("ALTER TABLE provisioning_jobs ADD COLUMN node_id INTEGER")
         for column, declaration in (("reconciliation_status", "TEXT NOT NULL DEFAULT 'pending'"),
                                     ("reconciled_by", "INTEGER"), ("reconciled_at", "TEXT"),
-                                    ("reconciliation_note", "TEXT"), ("request_hash", "TEXT")):
+                                    ("reconciliation_note", "TEXT"), ("request_hash", "TEXT"),
+                                    ("worker_lease_owner", "TEXT"), ("worker_lease_expires_at", "INTEGER")):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE provisioning_jobs ADD COLUMN {column} {declaration}")
         db.execute("CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_status ON provisioning_jobs(status,created_at)")

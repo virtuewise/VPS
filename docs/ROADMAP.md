@@ -45,7 +45,7 @@
 - [x] One-time node enrollment tokens (hashed at rest, 15-minute expiry, single use)
 - [x] Per-node credentials, authenticated heartbeat and outbound command polling, inventory snapshots, and administrator revocation (credential rotation remains manual)
 - [ ] Mutual TLS between control plane and agents
-- [x] SQLite-backed asynchronous provisioning queue with durable job state and conservative restart recovery (single API worker; no safe automatic retries yet)
+- [x] SQLite-backed asynchronous provisioning queue with durable job state, transactional multi-process claims, expiring worker/node-command leases and conservative restart recovery (single host; no safe automatic retries yet)
 - [x] Node heartbeats and health status
 - [x] Resource-aware node placement with transactional CPU/RAM/storage reservations and durable multi-node provisioning dispatch
 
@@ -64,7 +64,8 @@
 - [x] Resource-based VM/CPU/memory/storage quotas and transactional allocation reservation
 - [ ] Usage metering, billing, and customer self-service password recovery
 - [x] Multi-node scheduler, node-routed VM lifecycle and inventory aggregation
-- [ ] Advanced placement policies, distributed queue leases and multi-process worker coordination
+- [x] Same-host multi-process worker coordination with SQLite transactional claims, process-specific legacy worker leases and heartbeat-renewed node-command leases
+- [ ] Multi-host distributed queue/lease backend and advanced placement policies
 - [ ] Backups, restore, and operational alerts
 
 ## Milestone 6 â€” Plugin ecosystem and AI integrations

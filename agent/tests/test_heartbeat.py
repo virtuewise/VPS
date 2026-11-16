@@ -29,6 +29,11 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(payload["inventory"], [{"name": "demo"}])
         self.assertEqual(payload["switches"], [{"name": "Default Switch"}])
         self.assertIn("network.manage", payload["capabilities"])
+        active = heartbeat_payload({"memory_total_mb": 1, "memory_free_mb": 1}, "hyperv", "0.4.0",
+                                   active_command_id="12345678-1234-1234-1234-123456789abc",
+                                   heartbeat_interval_seconds=300)
+        self.assertEqual(active["active_command_id"], "12345678-1234-1234-1234-123456789abc")
+        self.assertEqual(active["heartbeat_interval_seconds"], 300)
 
     def test_executes_only_typed_vm_commands_and_refreshes_inventory(self):
         class Provider:
@@ -63,9 +68,11 @@ class HeartbeatTests(unittest.TestCase):
                     }}})
                 Client.completion = kwargs["json"]
                 raise asyncio.CancelledError()
+        command_state = {"active_command_id": None}
         with patch("app.heartbeat.httpx.AsyncClient", return_value=Client()):
             with self.assertRaises(asyncio.CancelledError):
-                asyncio.run(node_command_loop(("http://127.0.0.1:8000", 1, "x" * 40, 60), Provider()))
+                asyncio.run(node_command_loop(("http://127.0.0.1:8000", 1, "x" * 40, 60), Provider(), command_state))
+        self.assertIsNone(command_state["active_command_id"])
         self.assertEqual(Client.completion["status"], "succeeded")
         self.assertEqual(Client.completion["result"]["_inventory"], [{"name": "demo"}])
 
