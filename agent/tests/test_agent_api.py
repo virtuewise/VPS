@@ -5,7 +5,7 @@ from unittest.mock import patch
 os.environ["VPS_AGENT_TOKEN"] = "agent-test-token-that-is-at-least-32-characters"
 
 from fastapi.testclient import TestClient
-from app.main import app
+from app.main import app, CloudInitRequest
 
 
 class AgentApiTests(unittest.TestCase):
@@ -28,6 +28,16 @@ class AgentApiTests(unittest.TestCase):
                            "ssh_public_key": "not-a-key"}
         })
         self.assertEqual(response.status_code, 422, response.text)
+
+
+    def test_cloud_init_accepts_valid_sha512_hash_and_ssh_key(self):
+        valid = CloudInitRequest.model_validate({
+            "username": "ubuntu",
+            "password_hash": "$6$rounds=5000$salt1234$" + "A" * 86,
+            "ssh_public_key": "ssh-ed25519 " + "A" * 44 + " test-key",
+        })
+        self.assertEqual(valid.username, "ubuntu")
+        self.assertTrue(valid.password_hash.startswith("$6$"))
 
     def test_delete_requires_exact_url_and_body_confirmation(self):
         payload = {"name": "test-vm", "confirm_name": "different-name", "delete_disks": False}
