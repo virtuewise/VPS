@@ -1,11 +1,12 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ["VPS_AGENT_TOKEN"] = "agent-test-token-that-is-at-least-32-characters"
 
 from fastapi.testclient import TestClient
-from app.main import app, CloudInitRequest
+from app.main import app, CloudInitRequest, require_provider_capability
 
 
 class AgentApiTests(unittest.TestCase):
@@ -20,6 +21,13 @@ class AgentApiTests(unittest.TestCase):
             inventory = self.client.get("/v1/vms", headers=self.headers)
         self.assertEqual(inventory.status_code, 200, inventory.text)
         self.assertEqual(inventory.json(), {"items": []})
+
+    def test_provider_capability_declarations_gate_operations(self):
+        with patch("app.main.PROVIDER_MANIFEST", SimpleNamespace(capabilities=["inventory.read"])):
+            require_provider_capability("inventory.read")
+            with self.assertRaises(Exception) as caught:
+                require_provider_capability("vm.delete")
+        self.assertEqual(getattr(caught.exception, "status_code", None), 503)
 
     def test_cloud_init_rejects_incomplete_or_unsafe_credentials(self):
         response = self.client.post("/v1/vms", headers=self.headers, json={

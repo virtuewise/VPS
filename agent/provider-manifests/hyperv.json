@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "id": "com.virtuewise.provider.hyperv",
+  "name": "VirtueWise Hyper-V Provider",
+  "version": "1.0.0",
+  "provider_api_min": "1.0.0",
+  "provider_api_max": "1.0.0",
+  "provider_type": "virtualization",
+  "runtime": "builtin",
+  "capabilities": [
+    "inventory.read",
+    "host.metrics.read",
+    "vm.create",
+    "vm.power",
+    "vm.delete",
+    "vm.console"
+  ],
+  "maintainer": "VirtueWise",
+  "license": "MIT"
+}

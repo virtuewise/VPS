@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://virtuewise.com/schemas/provider-manifest-v1.json",
+  "title": "VirtueWise Provider Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "id",
+    "name",
+    "version",
+    "provider_api_min",
+    "provider_api_max",
+    "provider_type",
+    "runtime",
+    "capabilities",
+    "maintainer",
+    "license"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "maxLength": 128
+    },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80
+    },
+    "version": {
+      "$ref": "#/$defs/semver"
+    },
+    "provider_api_min": {
+      "$ref": "#/$defs/semver"
+    },
+    "provider_api_max": {
+      "$ref": "#/$defs/semver"
+    },
+    "provider_type": {
+      "const": "virtualization"
+    },
+    "runtime": {
+      "const": "builtin"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "inventory.read",
+          "host.metrics.read",
+          "vm.create",
+          "vm.power",
+          "vm.delete",
+          "vm.console"
+        ]
+      }
+    },
+    "maintainer": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 120
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    }
+  }
+}

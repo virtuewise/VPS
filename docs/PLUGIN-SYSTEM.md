@@ -15,7 +15,7 @@ A plugin is an independently versioned package with a manifest, declared capabil
 - **Identity/billing plugins:** connect external identity and metering systems.
 - **Automation plugins:** expose narrowly scoped workflows and event handlers.
 
-## Manifest contract (draft)
+## Manifest contract (version 1 implemented for built-in providers)
 
 Each plugin must declare:
 
@@ -27,7 +27,7 @@ Each plugin must declare:
 - Health/readiness checks and resource limits.
 - License, source repository, maintainer, and integrity digest.
 
-A plugin must fail closed when its API version or required capability is unavailable.
+A provider must fail closed when its API version or declared capability is unavailable. The v1 provider schema is `agent/provider-manifests/schema.json`; Hyper-V and libvirt manifests are validated at agent startup. Only the `builtin` runtime is accepted today. Capability declarations are validated against a fixed allowlist but are not yet an authorization engine or a grant to execute operations. External package installation and execution remain disabled.
 
 ## Security requirements
 

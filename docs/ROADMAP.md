@@ -63,9 +63,9 @@
 ## Milestone 6 â€” Plugin ecosystem and AI integrations
 
 - [x] Draft plugin architecture, capability security model, and integration phases
-- [ ] Versioned plugin manifest schema and capability registry
+- [x] Versioned provider manifest schema, semantic-version compatibility checks, and capability allowlist (built-in providers only)
 - [x] Initial provider interface contract and developer starter guide
-- [ ] External provider SDK packaging and conformance suite
+- [x] Initial shared provider contract/conformance tests (external SDK packaging and real-host certification remain open)
 - [x] First-party MCP server with six read-only infrastructure inspection tools and a dedicated scoped API credential
 - [ ] ChatGPT integration guide, per-customer delegated scopes/OAuth, and deployment packaging
 - [ ] Isolated plugin runtime, signing, health checks, and lifecycle management

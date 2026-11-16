@@ -6,18 +6,25 @@ from contextlib import asynccontextmanager
 import os
 import re
 from typing import Any
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.providers import hyperv as hyperv_provider, libvirt
 from app.providers.interface import validate_provider
+from app.providers.manifest import load_provider_manifest
 from app.heartbeat import heartbeat_config, heartbeat_loop
 
 PROVIDER_NAME = os.getenv("VPS_PROVIDER", "hyperv").strip().lower()
 if PROVIDER_NAME not in {"hyperv", "libvirt"}:
     raise RuntimeError("VPS_PROVIDER must be either hyperv or libvirt.")
 hyperv = libvirt if PROVIDER_NAME == "libvirt" else hyperv_provider
+PROVIDER_API_VERSION = "1.0.0"
+PROVIDER_MANIFEST = load_provider_manifest(
+    Path(__file__).resolve().parents[1] / "provider-manifests" / f"{PROVIDER_NAME}.json",
+    api_version=PROVIDER_API_VERSION,
+)
 validate_provider(hyperv)
 
 AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
@@ -40,6 +47,11 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.3.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+def require_provider_capability(capability: str) -> None:
+    if capability not in PROVIDER_MANIFEST.capabilities:
+        raise HTTPException(status_code=503, detail=f"Configured provider does not declare required capability: {capability}")
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -81,48 +93,56 @@ class DeleteVMRequest(VMNameRequest):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "version": "0.3.0"}
+    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "provider_id": PROVIDER_MANIFEST.id, "provider_version": PROVIDER_MANIFEST.version, "version": "0.3.0"}
 
 
 @app.get("/v1/vms", dependencies=[Depends(require_token)])
 def list_vms() -> dict[str, list[dict[str, Any]]]:
+    require_provider_capability("inventory.read")
     return {"items": hyperv.list_vms()}
 
 
 @app.get("/v1/switches", dependencies=[Depends(require_token)])
 def list_switches() -> dict[str, list[dict[str, Any]]]:
+    require_provider_capability("inventory.read")
     return {"items": hyperv.list_switches()}
 
 
 @app.get("/v1/monitor", dependencies=[Depends(require_token)])
 def monitor() -> dict[str, Any]:
+    require_provider_capability("host.metrics.read")
     return hyperv.host_monitor()
 
 
 @app.post("/v1/vms", dependencies=[Depends(require_token)], status_code=202)
 def create_vm(request: CreateVMRequest) -> dict[str, Any]:
+    require_provider_capability("vm.create")
     result = hyperv.create_vm(**request.model_dump())
     return {"status": "created", "vm": result}
 
 
 @app.post("/v1/vms/start", dependencies=[Depends(require_token)])
 def start_vm(request: VMNameRequest) -> dict[str, Any]:
+    require_provider_capability("vm.power")
     return {"status": "started", "vm": hyperv.vm_action("start", request.name)}
 
 
 @app.post("/v1/vms/stop", dependencies=[Depends(require_token)])
 def stop_vm(request: VMNameRequest) -> dict[str, Any]:
+    require_provider_capability("vm.power")
     return {"status": "stop-requested", "vm": hyperv.vm_action("stop", request.name)}
 
 
 @app.post("/v1/vms/{name}/console", dependencies=[Depends(require_token)])
 def open_console(name: str) -> dict[str, Any]:
+    require_provider_capability("vm.console")
     result = hyperv.vm_action("console", name)
     return {"status": "opened" if result.get("opened", True) else "instructions", "console": result}
 
 
 @app.delete("/v1/vms/{name}", dependencies=[Depends(require_token)])
 def delete_vm(name: str, request: DeleteVMRequest) -> dict[str, Any]:
+    require_provider_capability("vm.delete")
     if request.name != name or request.confirm_name != name:
         raise HTTPException(status_code=400, detail="The VM name and confirmation name must match the URL.")
     result = hyperv.vm_action("delete", name, delete_disks=request.delete_disks)
