@@ -112,7 +112,7 @@ byId("vm-content").addEventListener("click",async event=>{
   }
   button.disabled=true;
   try{
-    if(action==="console"){await api(`/api/vms/${encodeURIComponent(name)}/console`,{method:"POST"});notice("Hyper-V console launch requested on the Windows node. The console window opens on that machine.");}
+    if(action==="console"){const result=await api(`/api/vms/${encodeURIComponent(name)}/console`,{method:"POST"});const detail=result.console||{};notice(detail.message||"Console launch requested on the virtualization node.");}
     else{await api(`/api/vms/${encodeURIComponent(name)}/${action}`,{method:"POST"});notice(`VM ${name}: ${action} request completed.`);await loadDashboard();}
   }catch(error){notice(error.message);button.disabled=false;}
 });
