@@ -38,7 +38,7 @@ Windows 11 Home does not support this Hyper-V provider. You can still develop th
     py -c "import secrets; print(secrets.token_hex(32))"
     docker compose up --build
 
-Open the dashboard at http://localhost:8000 and sign in with the password configured as VPS_ADMIN_PASSWORD in .env. Stop with Ctrl+C or run docker compose down.
+Open the dashboard at http://localhost:8000 and sign in with username `admin` and the password configured as VPS_ADMIN_PASSWORD in .env. Stop with Ctrl+C or run docker compose down.
 
 ## Connect a local Windows Hyper-V node
 
@@ -46,7 +46,7 @@ Follow the Windows 11 Hyper-V setup guide, then the control-plane/agent setup gu
 
 See docs/HYPERV-ADVANCED-FEATURES.md for console, cloud-init, SSH, network reporting, deletion safeguards and monitoring setup.
 
-See docs/ACCOUNTS-AND-ADMINISTRATION.md for account setup and the current multi-user foundation.
+Use the administrator's **Customer accounts** panel to create customers, set VM-count quotas, change roles, suspend/reactivate accounts, transfer VM ownership and review recent audit events. See docs/ACCOUNTS-AND-ADMINISTRATION.md for account setup and API details.
 
 ## Security and limitations
 
