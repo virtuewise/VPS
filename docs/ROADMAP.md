@@ -37,10 +37,12 @@
 
 - [x] Experimental libvirt/KVM provider prototype behind the shared node-agent API
 - [ ] Real-host libvirt acceptance tests and provider conformance suite
-- [ ] One-time node enrollment tokens and key rotation
+- [x] One-time node enrollment tokens (hashed at rest, 15-minute expiry, single use)
+- [ ] Agent identity, enrollment completion, and credential rotation
 - [ ] Mutual TLS between control plane and agents
 - [ ] Job queue for long-running VM operations
 - [ ] Node heartbeats and health status
+- [ ] Resource-aware multi-node scheduler
 
 ## Milestone 4 — Guest networking and usable VPS
 
@@ -56,6 +58,16 @@
 - [ ] Resource-based quotas, usage metering, billing, and customer self-service password recovery
 - [ ] Multi-node scheduler and placement policies
 - [ ] Backups, restore, and operational alerts
+
+## Milestone 6 — Plugin ecosystem and AI integrations
+
+- [x] Draft plugin architecture, capability security model, and integration phases
+- [ ] Versioned plugin manifest schema and capability registry
+- [ ] Provider plugin interface and conformance suite
+- [ ] First-party MCP server for compatible AI clients (read-only tools first)
+- [ ] ChatGPT integration guide, OAuth/scoped authorization, and deployment packaging
+- [ ] Isolated plugin runtime, signing, health checks, and lifecycle management
+- [ ] Plugin SDK, sample plugins, and developer documentation
 
 ## Engineering gate — before public hosting
 
