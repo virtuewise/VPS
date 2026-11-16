@@ -98,8 +98,8 @@ def list_vms() -> list[dict[str, Any]]:
             try:
                 for row in _run([VIRSH, "domifaddr", name, "--source", "agent", "--full"]).splitlines()[2:]:
                     cols = row.split()
-                    if len(cols) >= 5:
-                        addresses.setdefault(cols[1].lower(), []).append(cols[4].split("/")[0])
+                    if len(cols) >= 4:
+                        addresses.setdefault(cols[1].lower(), []).append(cols[3].split("/")[0])
             except HTTPException:
                 pass
             for row in rows:
