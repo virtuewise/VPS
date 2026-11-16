@@ -66,6 +66,9 @@ def _domain_xml(name: str, memory_mb: int, cpu_count: int, disk: Path, iso: Path
         ET.SubElement(iface, "model", {"type": "virtio"})
     ET.SubElement(devices, "serial", {"type": "pty"}).append(ET.Element("target", {"port": "0"}))
     ET.SubElement(devices, "console", {"type": "pty"}).append(ET.Element("target", {"type": "serial", "port": "0"}))
+    channel = ET.SubElement(devices, "channel", {"type": "unix"})
+    ET.SubElement(channel, "source", {"mode": "bind"})
+    ET.SubElement(channel, "target", {"type": "virtio", "name": "org.qemu.guest_agent.0"})
     ET.SubElement(devices, "graphics", {"type": "vnc", "autoport": "yes", "listen": "127.0.0.1"})
     return ET.tostring(domain, encoding="unicode")
 
@@ -177,7 +180,7 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
                 raise HTTPException(status_code=422, detail="Provide one valid SSH public key.")
             seed_dir.mkdir(parents=True, exist_ok=True)
             (seed_dir / "user-data").write_text(
-                f"#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: {name}\n    username: {username}\n    password: '{password_hash}'\n  ssh:\n    install-server: true\n    allow-pw: false\n    authorized-keys:\n      - {json.dumps(key)}\n",
+                f"#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: {name}\n    username: {username}\n    password: '{password_hash}'\n  ssh:\n    install-server: true\n    allow-pw: false\n    authorized-keys:\n      - {json.dumps(key)}\n  packages:\n    - qemu-guest-agent\n  late-commands:\n    - curtin in-target --target=/target -- systemctl enable qemu-guest-agent\n",
                 encoding="utf-8")
             (seed_dir / "meta-data").write_text(f"instance-id: {name}\nlocal-hostname: {name}\n", encoding="utf-8")
             _run([CLOUD_LOCALDS, str(seed_iso), str(seed_dir / "user-data"), str(seed_dir / "meta-data")])
@@ -208,10 +211,17 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
 def vm_action(action: str, name: str, *, delete_disks: bool = False) -> Any:
     _validate_name(name)
     if action == "start":
+        current = _run([VIRSH, "domstate", name]).strip().lower()
+        if current == "running":
+            return {"name": name, "state": "running"}
         _run([VIRSH, "start", name])
         return {"name": name, "state": "running"}
     if action == "stop":
+        current = _run([VIRSH, "domstate", name]).strip().lower()
+        if current in {"shut off", "shutoff"}:
+            return {"name": name, "state": "shut off"}
         _run([VIRSH, "shutdown", name])
+        return {"name": name, "state": "shutdown-requested"}
         return {"name": name, "state": "shutdown-requested"}
     if action == "console":
         _run([VIRSH, "domstate", name])
