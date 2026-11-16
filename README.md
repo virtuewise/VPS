@@ -2,7 +2,7 @@
 
 An open-source, self-hostable VPS control plane designed to start on one computer and grow into a multi-node hosting platform.
 
-> **Project status: early development.** The repository includes a Windows Hyper-V node-agent prototype and a single-node control-plane integration. It has not been validated on a physical Hyper-V host and is not production-ready.
+> **Project status: early development.** The repository includes a Windows Hyper-V and Linux libvirt provider prototype, authenticated outbound node heartbeats, resource-aware multi-node provisioning dispatch, and node-routed VM lifecycle operations. It has not been validated on a physical Hyper-V host and is not production-ready.
 
 ## Current capabilities
 
@@ -17,7 +17,9 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 - Hyper-V virtual NIC, MAC address and guest IP inventory
 - VM deletion with exact-name confirmation; disk deletion is separately opt-in and restricted to the managed VM root
 - Host CPU, physical RAM and VM-storage-volume capacity sampling
-- Node heartbeat reporting, resource-aware placement preview, and durable asynchronous VM provisioning jobs
+- Node heartbeat and inventory reporting, resource-aware multi-node placement with transactional capacity reservations, and durable asynchronous provisioning jobs
+- Outbound authenticated node command polling for VM create/start/stop/delete/console operations; no inbound node-agent listener is required
+- Multi-node VM inventory, switch and monitoring aggregation; per-node VM placement and lifecycle routing, including switch-aware node affinity
 - CPU, RAM and storage quotas with transactional allocation reservations
 - First-party read-only MCP server with scoped per-customer tokens and Streamable HTTP, plus a signed, versioned provider SDK with administrator-controlled package lifecycle
 - Searchable developer portal at `/developers`
@@ -57,7 +59,7 @@ Use the administrator's **Customer accounts** panel to create customers, set VM-
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
 - The dashboard requires a configured administrator password and session-signing secret. Customer accounts have ownership checks and VM/CPU/RAM/storage quotas. Billing, MFA, password recovery and production hardening remain outstanding.
 - The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
-- Node enrollment uses single-use expiring credentials, per-node tokens, heartbeats and administrator revocation. Mutual TLS, external security review and production-grade rate limiting remain outstanding.
+- Node enrollment uses single-use expiring credentials, per-node tokens, heartbeats and administrator revocation. Mutual TLS, multi-process queue coordination, external security review and production-grade rate limiting remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
 - Cloud-init requires a compatible Ubuntu Server ISO and Windows ADK oscdimg.exe. Test unattended installation in a disposable VM first.
 - Guest IP reporting depends on Hyper-V integration services and guest network configuration.

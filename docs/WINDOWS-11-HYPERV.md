@@ -65,6 +65,6 @@ The dashboard can optionally attach a generated Ubuntu autoinstall NoCloud seed 
 - Do not port-forward port 8765 or expose it to the internet.
 - Run the agent under an account with only the Hyper-V permissions it needs; VM creation and deletion are privileged operations.
 - VM deletion requires explicit name confirmation. Disk files are retained by default; opt-in disk deletion is limited to disks under the configured VM root. Back up data first.
-- The initial agent is a local milestone and is not yet wired into the dashboard's control-plane node registry.
+- The Windows Hyper-V agent is integrated with the control-plane node registry through one-time enrollment, authenticated outbound heartbeats and typed command polling. Physical Hyper-V host acceptance testing is still required.
 - Ubuntu ISO boot/install and guest networking should be validated on the target hardware before treating a VM as a usable VPS.
 - Hyper-V availability and performance depend on Windows edition, firmware settings, and host hardware.

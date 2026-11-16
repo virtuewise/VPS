@@ -1,13 +1,13 @@
 # Architecture
 
-## Current MVP
+## Current implementation
 
-The first milestone is intentionally small:
-
-- FastAPI serves the dashboard and JSON API.
-- SQLite stores local control-plane metadata.
-- Docker Compose runs the API with a persistent named volume.
-- The dashboard reads health and compute-node inventory endpoints.
+- FastAPI serves the dashboard, REST API and searchable developer portal.
+- SQLite stores users, quotas, VM ownership, nodes, signed MCP token metadata, durable provisioning jobs and node commands.
+- Node agents enroll with single-use tokens, then send authenticated HTTPS heartbeats and VM/switch inventory over outbound connections.
+- The control plane performs resource-aware node placement with persisted CPU/RAM/storage reservations.
+- VM create/start/stop/delete/console commands are dispatched over a typed, authenticated node polling channel; the agent does not need an inbound network listener.
+- Hyper-V and libvirt are first-party providers; the provider SDK supports signed third-party packages in an isolated worker profile.
 
 ## Target architecture
 
@@ -26,17 +26,17 @@ Node agent (least privilege)
   +---- isolated virtual networks
 ```
 
-The control plane should never run arbitrary host commands or mount the host Docker socket. A node agent will expose only typed, allow-listed actions and will validate resource limits before executing them.
+The control plane never runs arbitrary host commands or mounts the host Docker socket. Node agents expose only typed, allow-listed operations and validate requests before executing them. Multi-process queue coordination, mutual TLS, external security review and real-host provider certification remain open.
 
 ## Development stages
 
 1. Local dashboard and health API.
 2. User identity, sessions, roles, and audit events.
-3. Node enrollment using one-time enrollment tokens and mutual authentication.
-4. Agent capabilities and heartbeat reporting.
-5. VM lifecycle through libvirt on Linux hosts.
-6. Network isolation, storage quotas, snapshots, and console access.
-7. Multi-node placement and resource accounting.
+3. [x] One-time node enrollment, per-node bearer identity and authenticated heartbeat.
+4. [x] Outbound node command channel and VM/switch inventory snapshots.
+5. [x] Resource-aware multi-node provisioning and VM lifecycle routing.
+6. [ ] Network isolation, snapshots, backups and browser console.
+7. [ ] Distributed queue coordination, mTLS and real-host certification.
 
 ## Laptop-first development
 

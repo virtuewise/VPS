@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.providers.loader import load_configured_provider
-from app.heartbeat import heartbeat_config, heartbeat_loop
+from app.heartbeat import heartbeat_config, heartbeat_loop, node_command_loop
 
 hyperv, PROVIDER_MANIFEST, PROVIDER_NAME = load_configured_provider()
 
@@ -23,19 +23,23 @@ if len(AGENT_TOKEN) < 32:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     config = heartbeat_config()
-    task = asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.3.0")) if config else None
+    tasks = [
+        asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.4.0")),
+        asyncio.create_task(node_command_loop(config, hyperv)),
+    ] if config else []
     try:
         yield
     finally:
-        if task:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await asyncio.wait_for(task, timeout=3)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 
 
-app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.3.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.4.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def require_provider_capability(capability: str) -> None:
@@ -82,7 +86,7 @@ class DeleteVMRequest(VMNameRequest):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "provider_id": PROVIDER_MANIFEST.id, "provider_version": PROVIDER_MANIFEST.version, "version": "0.3.0"}
+    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "provider_id": PROVIDER_MANIFEST.id, "provider_version": PROVIDER_MANIFEST.version, "version": "0.4.0"}
 
 
 @app.get("/v1/vms", dependencies=[Depends(require_token)])

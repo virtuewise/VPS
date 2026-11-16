@@ -36,20 +36,24 @@ async function waitForProvisioning(jobId) {
 async function loadSwitches() {
   const select = byId("switch-select"), selected = select.value, result = await api("/api/switches");
   select.replaceChildren(new Option("No switch (disconnected)", ""));
-  for (const item of result.items || []) select.add(new Option(`${item.name} — ${item.switch_type || "virtual switch"}`, item.name));
+  for (const item of result.items || []) {
+    const value = item.node_id ? JSON.stringify({node_id:item.node_id,name:item.name}) : item.name;
+    const label = item.node_name ? `${item.name} ? ${item.node_name}` : `${item.name} ? ${item.switch_type || "virtual switch"}`;
+    select.add(new Option(label, value));
+  }
   if ([...select.options].some(option => option.value === selected)) select.value = selected;
 }
 function renderVMs(items) {
   const content = byId("vm-content");
   byId("vm-count").textContent = String(items.length);
-  byId("vm-summary").textContent = items.length ? "VMs on connected virtualization node" : "No VMs found on this node";
+  byId("vm-summary").textContent = items.length ? `VMs across ${new Set(items.map(vm=>vm.node_id).filter(Boolean)).size || 1} connected node(s)` : "No VMs found on connected nodes";
   if (!items.length) { content.className="empty"; content.innerHTML='<div class="empty-icon">▣</div><b>No virtual machines found</b><p class="muted">Use the form above to create your first VM.</p>'; return; }
   content.className="vm-list";
   content.innerHTML=items.map(vm=>{
     const name=escapeHtml(vm.name), state=escapeHtml(vm.state||"Unknown"), running=String(vm.state||"").toLowerCase()==="running";
     const net=(vm.network||[]).flatMap(n=>(n.ip_addresses||[]).map(ip=>`${escapeHtml(ip)} (${escapeHtml(n.switch_name||"unattached")})`));
     const netText=net.length?net.join(", "):"No guest IP reported yet";
-    return `<div class="vm-row vm-row-expanded"><div class="vm-ident"><b>${name}</b><span class="muted">CPU ${escapeHtml(vm.cpu_usage??"—")}% · ${Number(vm.memory_assigned_mb||0)} MB assigned</span><span class="muted">Network: ${netText}</span></div><span class="state ${running?"running":""}">${state}</span><div class="vm-actions"><button class="secondary" data-action="console" data-name="${name}" ${running?"":"disabled"}>Console</button><button class="secondary" data-action="${running?"stop":"start"}" data-name="${name}">${running?"Stop":"Start"}</button><button class="danger" data-action="delete" data-name="${name}">Delete</button></div></div>`;
+    return `<div class="vm-row vm-row-expanded"><div class="vm-ident"><b>${name}</b><span class="muted">${escapeHtml(vm.node_name||"Configured agent")} ? CPU ${escapeHtml(vm.cpu_usage??"—")}% · ${Number(vm.memory_assigned_mb||0)} MB assigned</span><span class="muted">Network: ${netText}</span></div><span class="state ${running?"running":""}">${state}</span><div class="vm-actions"><button class="secondary" data-action="console" data-name="${name}" ${running?"":"disabled"}>Console</button><button class="secondary" data-action="${running?"stop":"start"}" data-name="${name}">${running?"Stop":"Start"}</button><button class="danger" data-action="delete" data-name="${name}">Delete</button></div></div>`;
   }).join("");
 }
 async function loadMonitor() {
@@ -101,9 +105,9 @@ async function loadDashboard() {
     byId("agent-status").textContent=agent.online?"Online":"Offline";
     byId("agent-status").className=agent.online?"online":"offline";
     setCreateEnabled(agent.online);
-    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname)}</span><span>${escapeHtml(n.status)}</span></div>`).join("");}
+    if(nodes.items.length){byId("nodes-content").className="node-list";byId("nodes-content").innerHTML=nodes.items.map(n=>`<div class="node-row"><b>${escapeHtml(n.name)}</b><span>${escapeHtml(n.hostname)}</span><span>${escapeHtml(n.status)} ? ${Number(n.vm_count||0)} VMs</span></div>`).join("");}
     if(agent.online){const [vms]=await Promise.all([api("/api/vms"),loadSwitches()]);renderVMs(vms.items||[]);await loadMonitor();}
-    else{byId("vm-count").textContent="—";byId("vm-summary").textContent="Agent not connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Node agent is offline")}</b><p class="muted">Start the node agent and configure VPS_AGENT_URL and VPS_AGENT_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
+    else{await loadSwitches();byId("vm-count").textContent="?";byId("vm-summary").textContent="No nodes currently connected";byId("vm-content").className="empty";byId("vm-content").innerHTML=`<b>${escapeHtml(agent.message||"Node agent is offline")}</b><p class="muted">Start an enrolled node agent with VPS_CONTROL_PLANE_URL, VPS_NODE_ID and VPS_NODE_TOKEN.</p>`;byId("monitor-content").textContent="Node agent offline";}
   } catch(error){byId("api-status").textContent="API unavailable";setCreateEnabled(false);notice(error.message);}
 }
 byId("create-vm-form").addEventListener("submit",async event=>{
@@ -111,7 +115,11 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   const v=new FormData(form), username=String(v.get("linux_username")||"").trim(), hash=String(v.get("password_hash")||"").trim(), key=String(v.get("ssh_public_key")||"").trim();
   const cloudFields=[username,hash,key], supplied=cloudFields.filter(Boolean).length;
   if(supplied!==0&&supplied!==3){notice("For cloud-init, fill in Linux username, SHA-512 password hash and SSH public key.");return;}
-  const payload={name:String(v.get("name")).trim(),iso_path:String(v.get("iso_path")).trim(),memory_mb:Number(v.get("memory_mb")),disk_gb:Number(v.get("disk_gb")),cpu_count:Number(v.get("cpu_count")),switch_name:String(v.get("switch_name")||"")||null};
+  const selectedSwitch=String(v.get("switch_name")||"");
+  let switchName=null, nodeId=null;
+  if(selectedSwitch){try{const choice=JSON.parse(selectedSwitch);if(choice&&typeof choice==="object"){switchName=choice.name;nodeId=Number(choice.node_id);}}catch{switchName=selectedSwitch;}}
+  const payload={name:String(v.get("name")).trim(),iso_path:String(v.get("iso_path")).trim(),memory_mb:Number(v.get("memory_mb")),disk_gb:Number(v.get("disk_gb")),cpu_count:Number(v.get("cpu_count")),switch_name:switchName};
+  if(Number.isSafeInteger(nodeId)&&nodeId>0)payload.node_id=nodeId;
   if(supplied===3)payload.cloud_init={username,password_hash:hash,ssh_public_key:key};
   const summary=`${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
   if(!confirm(`Create this VM?\n\n${summary}\nCloud-init: ${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.`))return;

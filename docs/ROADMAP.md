@@ -29,20 +29,23 @@
 - [x] Single-administrator login, signed expiring sessions and CSRF protection for control-plane APIs
 - [x] Bind Docker development port to localhost by default
 - [x] Add administrative audit events for authentication, accounts, ownership, and VM lifecycle requests
-- [ ] Add lifecycle state reconciliation and durable operation history
+- [x] Durable provisioning and node-command history with restart recovery
+- [ ] Lifecycle state reconciliation and operator recovery workflow
 - [x] Add initial multi-user RBAC, VM ownership, VM-count quotas, login throttling, and administrative audit view
-- [ ] Secure node enrollment, mutual TLS, token rotation, and production-grade rate limiting
+- [x] One-time secure node enrollment, hashed per-node credentials, administrator revocation and credential rotation endpoint (agent environment update/restart is manual)
+- [ ] Mutual TLS and production-grade rate limiting
 
 ## Milestone 3 â€” Linux provider and secure node enrollment
 
 - [x] Experimental libvirt/KVM provider prototype behind the shared node-agent API
-- [ ] Real-host libvirt acceptance tests and provider conformance suite
+- [x] Shared provider API conformance suite
+- [ ] Real-host libvirt acceptance tests
 - [x] One-time node enrollment tokens (hashed at rest, 15-minute expiry, single use)
-- [x] Per-node credentials, authenticated heartbeat API, and administrator revocation (agent push loop and rotation remain open)
+- [x] Per-node credentials, authenticated heartbeat and outbound command polling, inventory snapshots, and administrator revocation (credential rotation remains manual)
 - [ ] Mutual TLS between control plane and agents
 - [x] SQLite-backed asynchronous provisioning queue with durable job state and conservative restart recovery (single API worker; no safe automatic retries yet)
 - [x] Node heartbeats and health status
-- [x] Resource-aware node placement preview (provisioning dispatch/reservation not yet integrated)
+- [x] Resource-aware node placement with transactional CPU/RAM/storage reservations and durable multi-node provisioning dispatch
 
 ## Milestone 4 â€” Guest networking and usable VPS
 
@@ -57,7 +60,8 @@
 - [x] Initial customer accounts, administrator/customer roles, ownership checks, and VM-count quotas
 - [x] Resource-based VM/CPU/memory/storage quotas and transactional allocation reservation
 - [ ] Usage metering, billing, and customer self-service password recovery
-- [ ] Multi-node scheduler and placement policies
+- [x] Multi-node scheduler, node-routed VM lifecycle and inventory aggregation
+- [ ] Advanced placement policies, distributed queue leases and multi-process worker coordination
 - [ ] Backups, restore, and operational alerts
 
 ## Milestone 6 â€” Plugin ecosystem and AI integrations

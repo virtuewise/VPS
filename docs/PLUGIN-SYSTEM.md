@@ -55,7 +55,7 @@ The initial MCP server is implemented in `mcp-server/` and calls dedicated authe
 
 State-changing tools (create, start, stop, delete, network changes) are a later phase. They require explicit authorization, scoped credentials, destructive-action confirmation, idempotency, and audit records. Tool descriptions must state their effects clearly. No tool should expose arbitrary command execution.
 
-The MCP server is independently installable, uses environment-based configuration, and supports stdio plus optional stateless Streamable HTTP with bearer authentication on a loopback listener. Its SDK v2 integration is tested in-memory with the official MCP Client and mocked control-plane calls. Streamable HTTP transport is implemented for compatible MCP clients behind a TLS reverse proxy, with bearer authentication and DNS-rebinding protections. OAuth authorization flows, automatic ChatGPT account linking, multi-node inventory aggregation, and write tools remain future work.
+The MCP server is independently installable, uses environment-based configuration, and supports stdio plus optional stateless Streamable HTTP with bearer authentication on a loopback listener. Its SDK v2 integration is tested in-memory with the official MCP Client and mocked control-plane calls. Streamable HTTP transport is implemented for compatible MCP clients behind a TLS reverse proxy, with bearer authentication and DNS-rebinding protections. OAuth authorization flows, automatic ChatGPT account linking, and write tools remain future work. Multi-node inventory is aggregated from authenticated node heartbeat snapshots.
 
 ## Compatibility and release policy
 

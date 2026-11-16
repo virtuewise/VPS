@@ -63,4 +63,4 @@ The package pins the official MCP Python SDK v2 (`mcp==2.3.0`) and supports stdi
 | `get_vm_details` | Exact-name VM inventory lookup |
 | `get_resource_usage` | Host resource telemetry (admin scope required) |
 
-This release intentionally supports one configured node agent for VM inventory. Per-customer read-only tokens and ownership filtering are implemented. OAuth authorization flows, automatic ChatGPT account linking, multi-node VM inventory aggregation and mutation tools remain future work. Streamable HTTP transport is available behind a TLS reverse proxy.
+This release aggregates VM inventory from authenticated multi-node heartbeat snapshots. Per-customer read-only tokens and ownership filtering are implemented. OAuth authorization flows, automatic ChatGPT account linking and mutation tools remain future work. Streamable HTTP transport is available behind a TLS reverse proxy.

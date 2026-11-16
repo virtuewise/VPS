@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -31,7 +33,7 @@ def heartbeat_config(env: dict[str, str] | None = None) -> tuple[str, int, str, 
     return url, int(node_id), token, interval
 
 
-def heartbeat_payload(monitor: dict, provider: str, version: str) -> dict:
+def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: list[dict] | None = None, switches: list[dict] | None = None) -> dict:
     total = int(monitor.get("memory_total_mb") or 0)
     free = int(monitor.get("memory_free_mb") or 0)
     storage_total = float(monitor.get("storage_total_gb") or 0)
@@ -42,6 +44,8 @@ def heartbeat_payload(monitor: dict, provider: str, version: str) -> dict:
         "memory_total_mb": total, "memory_used_mb": max(0, total - free),
         "storage_total_gb": storage_total, "storage_used_gb": max(0, round(storage_total - storage_free, 1)),
         "provider": provider, "agent_version": version,
+        **({"inventory": inventory} if inventory is not None else {}),
+        **({"switches": switches} if switches is not None else {}),
     }
 
 
@@ -52,7 +56,18 @@ async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_n
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
             try:
-                payload = heartbeat_payload(provider.host_monitor(), provider_name, version)
+                monitor = await asyncio.to_thread(provider.host_monitor)
+                try:
+                    inventory = await asyncio.to_thread(provider.list_vms)
+                except Exception as exc:
+                    log.warning("Node inventory refresh failed (%s); retaining previous snapshot", type(exc).__name__)
+                    inventory = None
+                try:
+                    switches = await asyncio.to_thread(provider.list_switches)
+                except Exception as exc:
+                    log.warning("Node switch refresh failed (%s); retaining previous snapshot", type(exc).__name__)
+                    switches = None
+                payload = heartbeat_payload(monitor, provider_name, version, inventory, switches)
                 response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {token}"})
                 response.raise_for_status()
                 backoff = 5
@@ -63,3 +78,88 @@ async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_n
                 log.warning("Node heartbeat failed (%s); retrying in %s seconds", type(exc).__name__, backoff)
                 await asyncio.sleep(backoff + random.uniform(0, min(3, backoff / 4)))
                 backoff = min(interval, backoff * 2)
+
+
+async def execute_node_command(provider, kind: str, payload: dict):
+    """Execute only typed VM operations and return a fresh inventory snapshot."""
+    if not isinstance(payload, dict):
+        raise ValueError("Command payload must be an object.")
+    if kind == "vm.create":
+        allowed = {"name", "memory_mb", "disk_gb", "cpu_count", "iso_path", "switch_name", "cloud_init"}
+        required = {"name", "memory_mb", "disk_gb", "cpu_count", "iso_path"}
+        if set(payload) - allowed or not required <= set(payload):
+            raise ValueError("Invalid VM create command payload.")
+        name = payload["name"]
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{2,39}", name):
+            raise ValueError("Invalid VM name in create command.")
+        for key, low, high in (("memory_mb", 512, 32768), ("disk_gb", 8, 500), ("cpu_count", 1, 16)):
+            value = payload[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(f"Invalid {key} in create command.")
+        if not isinstance(payload["iso_path"], str) or not 5 <= len(payload["iso_path"]) <= 260:
+            raise ValueError("Invalid ISO path in create command.")
+        if payload.get("switch_name") is not None and (not isinstance(payload["switch_name"], str) or len(payload["switch_name"]) > 100):
+            raise ValueError("Invalid switch name in create command.")
+        cloud_init = payload.get("cloud_init")
+        if cloud_init is not None:
+            if not isinstance(cloud_init, dict) or set(cloud_init) != {"username", "password_hash", "ssh_public_key"}:
+                raise ValueError("Invalid cloud-init payload in create command.")
+            if any(not isinstance(cloud_init[key], str) or not cloud_init[key] for key in cloud_init):
+                raise ValueError("Invalid cloud-init values in create command.")
+        operation = await asyncio.to_thread(provider.create_vm, **payload)
+    elif kind in {"vm.start", "vm.stop", "vm.delete", "vm.console"}:
+        name = payload.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{2,39}", name):
+            raise ValueError("Invalid VM name in node command.")
+        action = kind.split(".", 1)[1]
+        if action == "delete":
+            if payload.get("confirm_name") != name:
+                raise ValueError("Delete command requires exact VM-name confirmation.")
+            delete_disks = payload.get("delete_disks", False)
+            if not isinstance(delete_disks, bool):
+                raise ValueError("Delete disk flag must be a boolean.")
+            operation = await asyncio.to_thread(provider.vm_action, action, name, delete_disks=delete_disks)
+        else:
+            operation = await asyncio.to_thread(provider.vm_action, action, name)
+    else:
+        raise ValueError("Unsupported node command type.")
+    inventory = await asyncio.to_thread(provider.list_vms)
+    if not isinstance(operation, dict) or not isinstance(inventory, list):
+        raise TypeError("Provider returned an invalid command result or inventory.")
+    return {**operation, "_inventory": inventory}
+
+
+async def node_command_loop(config: tuple[str, int, str, int], provider) -> None:
+    """Poll for durable node commands over the node's authenticated outbound channel."""
+    url, node_id, token, interval = config
+    base = f"{url}/api/nodes/{node_id}/commands"
+    headers = {"Authorization": f"Bearer {token}"}
+    backoff = 2
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            try:
+                response = await client.post(base + "/claim", headers=headers)
+                response.raise_for_status()
+                command = response.json().get("command")
+                if not command:
+                    backoff = 2
+                    await asyncio.sleep(min(5, max(1, interval // 12)))
+                    continue
+                try:
+                    result = await execute_node_command(provider, command["kind"], command["payload"])
+                    json.dumps(result, allow_nan=False)
+                    completion = {"status": "succeeded", "result": result}
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("Node command failed (%s)", type(exc).__name__)
+                    completion = {"status": "failed", "error": f"{type(exc).__name__}: provider operation failed"}
+                complete = await client.post(base + f"/{command['id']}/complete", json=completion, headers=headers)
+                complete.raise_for_status()
+                backoff = 2
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Node command channel failed (%s); retrying in %s seconds", type(exc).__name__, backoff)
+                await asyncio.sleep(backoff + random.uniform(0, min(2, backoff / 4)))
+                backoff = min(30, backoff * 2)

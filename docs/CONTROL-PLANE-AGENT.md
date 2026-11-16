@@ -1,61 +1,74 @@
-# Control plane ↔ Hyper-V agent (development)
+# Control plane and multi-node agent setup
 
-The control plane can now proxy VM inventory and lifecycle requests to one configured Hyper-V agent. This is a **single-node development integration**, not production node enrollment.
+VirtueWise supports two execution modes:
 
-## Safest Windows 11 setup
+- **Enrolled multi-node mode (recommended):** each node initiates outbound HTTPS heartbeats and polls a durable typed command queue. The control plane never opens an inbound connection to the node agent.
+- **Legacy single-agent mode:** `VPS_AGENT_URL` and `VPS_AGENT_TOKEN` proxy operations to one configured agent. This remains for local development and migration.
 
-For the current agent, keep it bound to `127.0.0.1:8765`. Do not expose it to your LAN or the internet.
+## 1. Enroll a node
 
-Because Docker Desktop cannot reach a host service that only listens on the host loopback interface, run the control-plane API directly on Windows for this local-only integration:
+An administrator creates a single-use enrollment token from an authenticated control-plane session. Include the session cookie and CSRF header:
 
-1. Start the agent in one PowerShell window using [the agent setup](../docs/WINDOWS-11-HYPERV.md).
-2. Copy the generated `VPS_AGENT_TOKEN` printed by the agent.
-3. In a second PowerShell window, from the repository root. Set an administrator password and a session-signing secret first:
+```http
+POST /api/nodes/enrollment-tokens
+Content-Type: application/json
+Cookie: vwps_session=YOUR_SESSION
+X-CSRF-Token: YOUR_CSRF_TOKEN
 
-```powershell
-$env:VPS_ADMIN_PASSWORD = "USE-A-UNIQUE-PASSWORD-OF-AT-LEAST-16-CHARACTERS"
-$env:VPS_SESSION_SECRET = (py -c "import secrets; print(secrets.token_hex(32))")
-$env:VPS_SESSION_COOKIE_SECURE = "false"
-cd backend
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-$env:VPS_AGENT_URL = "http://127.0.0.1:8765"
-$env:VPS_AGENT_TOKEN = "PASTE-THE-TOKEN-FROM-THE-AGENT-WINDOW"
-uvicorn app.main:app --app-dir . --host 127.0.0.1 --port 8000
+{"name":"compute-01","hostname":"compute-01.example.internal"}
 ```
 
-4. Open `http://127.0.0.1:8000` and sign in with the administrator password you set. The dashboard should show agent status and VM inventory.
+The response contains a random enrollment token valid for 15 minutes. Deliver it securely to the node operator; do not commit it or put it in a public issue. The node consumes it once:
 
-The agent token is a secret. Do not commit it, put it in frontend JavaScript, or paste it into an issue. Stop both local processes when finished.
+```http
+POST /api/nodes/enroll
+Content-Type: application/json
 
-## Docker Compose
+{"token":"ONE_TIME_ENROLLMENT_TOKEN"}
+```
 
-The Compose file accepts `VPS_AGENT_URL` and `VPS_AGENT_TOKEN`, but the default loopback-only agent cannot be reached from inside the container. Do not change the agent bind address to `0.0.0.0` as a workaround. A safe container-to-host bridge and authenticated node enrollment are future work.
+The response contains the node ID and a long-lived node identity token, shown only once. Store it in the node's secret environment or service manager. The database stores only its SHA-256 hash. An administrator can revoke a node or rotate its credential; credential rotation requires updating the node's environment and restarting the agent.
 
-## API proxy
+## 2. Configure the node agent
 
-- `GET /api/agent/status` — reports whether the configured agent is reachable
-- `GET /api/vms` — lists VMs
-- `GET /api/switches` — lists Hyper-V virtual switches
-- `POST /api/vms` — creates a VM using the agent's validated request schema
-- `POST /api/vms/{name}/start` and `/stop` — controls a VM
-- `DELETE /api/vms/{name}` — deletes a VM
+On the node, install the agent dependencies and configure:
 
-The API permits plain HTTP only for loopback addresses. Remote agent connections require HTTPS. The control plane now requires a single administrator password (`VPS_ADMIN_PASSWORD`, at least 16 characters) and session-signing secret (`VPS_SESSION_SECRET`, at least 32 characters). It uses signed 12-hour HttpOnly/SameSite cookies and CSRF tokens for state-changing requests. This is not multi-user RBAC. Keep the control plane bound to loopback; for HTTPS reverse-proxy deployments set `VPS_SESSION_COOKIE_SECURE=true` and never expose the development server directly.
+```dotenv
+VPS_AGENT_TOKEN=GENERATE_A_SEPARATE_LOCAL_AGENT_API_TOKEN
+VPS_CONTROL_PLANE_URL=https://control.example.com
+VPS_NODE_ID=1
+VPS_NODE_TOKEN=THE_ONE_TIME_RETURNED_NODE_TOKEN
+VPS_HEARTBEAT_INTERVAL=60
+VPS_PROVIDER=hyperv
+VPS_AGENT_HOST=127.0.0.1
+VPS_AGENT_PORT=8765
+```
 
+`VPS_AGENT_TOKEN` protects the local agent API and is distinct from `VPS_NODE_TOKEN`, which authenticates heartbeats and command polling to the control plane. Keep the agent bound to loopback. The node needs outbound HTTPS access to the control plane; no inbound firewall port is required for the node command channel.
 
-## Create a VM from the dashboard
+Start the agent using the service manager appropriate for the node. On Windows, Hyper-V requires a supported Windows edition and virtualization enabled in firmware. On Linux, the libvirt/KVM provider is experimental until certified on a real host.
 
-When the local agent is online, the dashboard enables the **Create a virtual machine** form.
+## 3. What the agent reports and receives
 
-- VM name: 3–40 letters, digits, or hyphens; must begin with a letter or digit.
-- Installer ISO: absolute path to an existing `.iso` file on the Windows host (for example, `C:\\ISO\\ubuntu-server.iso`).
-- Memory: 512–32768 MB.
-- Virtual disk: 8–500 GB.
-- Virtual CPUs: 1–16.
-- Virtual switch: optional; leave disconnected unless you have intentionally configured a suitable Hyper-V switch.
+The agent periodically sends authenticated CPU, memory, storage, provider, VM inventory and virtual-switch snapshots. It also polls:
 
-The create operation builds a Generation 2 VM with a dynamically provisioned VHDX in the configured VM root and attaches the ISO. It leaves the VM powered off. Start it from the VM inventory after checking the VM's settings and network attachment.
+- `POST /api/nodes/{node_id}/commands/claim`
+- `POST /api/nodes/{node_id}/commands/{command_id}/complete`
 
-**Caution:** Creating a VM allocates host storage and reserves startup memory/CPU capacity. Use conservative values on a laptop. Do not attach an external or bridged switch unless you understand the network exposure. This early interface has no user accounts, quotas, or per-user authorization; keep it on loopback.
+The command vocabulary is finite and typed: `vm.create`, `vm.start`, `vm.stop`, `vm.delete`, and `vm.console`. There is no arbitrary shell, Python expression or command-execution endpoint. The agent refreshes VM inventory after successful lifecycle commands.
+
+## 4. Scheduling and provisioning
+
+Provisioning jobs are durable. When enrolled nodes exist, the worker selects an online node with a fresh heartbeat, matching provider (when requested), and sufficient CPU, RAM and storage. Existing VM reservations are subtracted from schedulable capacity before dispatch. The node assignment and command are recorded transactionally. The node agent claims and completes the command over its outbound connection.
+
+ISO paths and virtual switch names refer to resources on the selected node. Ensure installation media is present on every eligible node, or request a provider/node placement policy appropriate to your storage layout. If enrolled nodes exist but none are currently eligible, the job remains queued rather than bypassing capacity checks. The legacy single-agent fallback is used only when no enrolled nodes exist.
+
+The dashboard aggregates VM inventory, virtual switches and host monitoring from fresh node heartbeats. Customer inventory is filtered through VM ownership. Node-routed start, stop, delete and console actions use the same command channel.
+
+## 5. Operational limits
+
+- The SQLite-backed queue currently assumes one API process/worker. Do not run multiple Uvicorn workers against the same database.
+- Commands are not blindly retried after an ambiguous in-flight outcome. Reconcile the VM on the node before re-issuing an operation.
+- Real-host Hyper-V and libvirt certification, mTLS, distributed queue leases, automatic credential rotation, and operator reconciliation workflows remain outstanding.
+- Heartbeats older than 180 seconds are not eligible for new placements.
+- Resource telemetry must be complete; missing values fail scheduling closed.

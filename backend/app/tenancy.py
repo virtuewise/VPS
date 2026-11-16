@@ -56,6 +56,9 @@ def initialize_tenancy(path: Path, admin_password: str, default_quota: int = 3) 
           request_json TEXT NOT NULL, result_json TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
           idempotency_key TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        job_columns = {row[1] for row in db.execute("PRAGMA table_info(provisioning_jobs)").fetchall()}
+        if "node_id" not in job_columns:
+            db.execute("ALTER TABLE provisioning_jobs ADD COLUMN node_id INTEGER")
         db.execute("CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_status ON provisioning_jobs(status,created_at)")
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute("INSERT INTO users(username,password_hash,role,vm_quota) VALUES('admin',?,'admin',-1)", (hash_password(admin_password),))
