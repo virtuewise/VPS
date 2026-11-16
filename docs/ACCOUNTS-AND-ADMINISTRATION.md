@@ -26,16 +26,17 @@ Example request body:
 }
 ```
 
-Allowed roles are `admin` and `user`. Usernames are 3–32 characters and limited to letters, digits, underscore, dot and hyphen. New passwords must be at least 16 characters. The `vm_quota` value is stored as an account policy setting; enforcement and tenant-isolated VM ownership are not yet implemented.
+Allowed roles are `admin` and `user`. Usernames are 3–32 characters and limited to letters, digits, underscore, dot and hyphen. New passwords must be at least 16 characters. The `vm_quota` value is enforced when a non-admin creates a VM. A quota of 0 disables VM creation; administrators are unlimited. VM ownership is recorded when the control plane successfully creates a VM.
 
 ## Audit events
 
-Administrators can retrieve the most recent account audit events with `GET /api/audit?limit=100`. The current log records successful sign-ins, sign-outs and account creation. It is an initial application audit trail, not a tamper-proof security log.
+Administrators can retrieve the most recent account audit events with `GET /api/audit?limit=100`. The current log records successful sign-ins, sign-outs, account creation and VM create/start/stop/delete actions. It is an initial application audit trail, not a tamper-proof security log.
 
 ## Current limitations
 
-- VM APIs and dashboard management remain administrator-only.
-- Tenant-specific VM ownership and quota enforcement are the next implementation step.
+- Non-admin users can create, view, start, stop, open the host console for, and delete only VMs recorded as theirs. Administrators can manage all VMs.
+- VMs that existed before ownership tracking was introduced remain visible to administrators only; there is not yet an ownership-transfer/claim workflow.
+- The quota counts recorded VM ownership rows; it is not a CPU, RAM, disk-capacity or billing quota.
 - User activation/deactivation, password reset, role editing, invitation flow, rate limiting and MFA are not implemented.
 - Existing installations keep the existing SQLite database. Back it up before upgrades.
 - Keep the dashboard loopback-only. This feature is a development foundation, not production-ready multi-tenant hosting.
