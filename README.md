@@ -19,7 +19,7 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 - Host CPU, physical RAM and VM-storage-volume capacity sampling
 - Node heartbeat reporting, resource-aware placement preview, and durable asynchronous VM provisioning jobs
 - CPU, RAM and storage quotas with transactional allocation reservations
-- First-party read-only MCP server and a signed, versioned provider SDK with administrator-controlled package lifecycle
+- First-party read-only MCP server with scoped per-customer tokens and Streamable HTTP, plus a signed, versioned provider SDK with administrator-controlled package lifecycle
 - Searchable developer portal at `/developers`
 
 ## Development prerequisites

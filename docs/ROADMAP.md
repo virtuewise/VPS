@@ -68,7 +68,9 @@
 - [x] Shared provider contract/conformance tests and signed sample provider package
 - [x] First-party MCP server with six read-only infrastructure inspection tools and a dedicated scoped API credential
 - [x] MCP installation and developer integration guide
-- [ ] ChatGPT hosted transport, OAuth and per-customer delegated scopes
+- [x] Per-customer delegated read-only MCP tokens with ownership filtering, expiry and revocation
+- [x] Streamable HTTP MCP transport with bearer authentication and TLS reverse-proxy deployment model
+- [ ] OAuth authorization flows and automatic ChatGPT account linking
 - [x] Signed Ed25519 provider packages, trust-store verification, SHA-256 integrity and strict archive validation
 - [x] Rootless Docker worker profile with typed capability-gated calls and resource restrictions
 - [x] Provider install, upgrade, enable, disable, rollback, uninstall, health-check and audit journal commands

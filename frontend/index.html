@@ -100,6 +100,26 @@
         </form>
       </div>
       <div class="ownership-transfer">
+        <h4>Scoped MCP credentials</h4>
+        <p class="muted">Issue expiring, read-only integration tokens for customers or administrators. Customer tokens can see only VMs assigned to that account. The raw token is displayed once.</p>
+        <form id="mcp-token-form" class="create-form">
+          <div class="form-grid">
+            <label>Token owner<select id="mcp-token-user" name="user_id" required></select></label>
+            <label>Token label<input name="label" minlength="2" maxlength="80" placeholder="Customer assistant" required></label>
+            <label>Expires in days<input name="expires_in_days" type="number" min="1" max="365" value="30" required></label>
+          </div>
+          <fieldset class="mcp-scopes"><legend>Read permissions</legend>
+            <label><input type="checkbox" name="scopes" value="health.read" checked> Basic service health</label>
+            <label><input type="checkbox" name="scopes" value="vms.read" checked> Owned VM inventory and details</label>
+            <label><input type="checkbox" name="scopes" value="nodes.read"> Node inventory (administrator only)</label>
+            <label><input type="checkbox" name="scopes" value="resources.read"> Host resources (administrator only)</label>
+          </fieldset>
+          <div class="form-actions"><button type="submit">Issue MCP token</button></div>
+        </form>
+        <div id="mcp-token-once" class="mcp-token-once" hidden><b>Copy this token now. It will not be shown again.</b><code id="mcp-token-value"></code><button id="mcp-token-copy" type="button" class="secondary">Copy token</button></div>
+        <div id="mcp-tokens-content" class="audit-list">Loading MCP tokens?</div>
+      </div>
+      <div class="ownership-transfer">
         <h4>Recent audit events</h4>
         <div id="audit-content" class="audit-list">Loading audit log…</div>
       </div>

@@ -44,7 +44,7 @@ A provider must fail closed when its API version or declared capability is unava
 
 The intended integration is a first-party VirtueWise **Model Context Protocol (MCP) server**. MCP is the tool interface for compatible AI clients; it is not the retired legacy ChatGPT Plugins format.
 
-The initial MCP server is implemented in `mcp-server/` and calls dedicated authenticated `/api/integrations/mcp/*` control-plane routes. It does not access SQLite directly. A separate `VPS_MCP_READ_TOKEN` protects these endpoints; this credential grants infrastructure-wide read-only access and must be treated as an administrator secret. The MCP process defaults to stdio and rejects remote plain HTTP, redirects, unbounded responses, and paths outside the dedicated read-only API. Initial tools include:
+The initial MCP server is implemented in `mcp-server/` and calls dedicated authenticated `/api/integrations/mcp/*` control-plane routes. It does not access SQLite directly. These endpoints accept an optional global `VPS_MCP_READ_TOKEN` for administrator-level read-only access or administrator-issued per-user scoped tokens. Scoped tokens are hashed at rest, expire, are revocable, and filter VM inventory to the token owner. Customer tokens cannot receive node or host-wide resource scopes. The MCP process defaults to stdio and rejects remote plain HTTP, redirects, unbounded responses, and paths outside the dedicated read-only API. Initial tools include:
 
 - `virtuewise_health`
 - `list_nodes`
@@ -55,7 +55,7 @@ The initial MCP server is implemented in `mcp-server/` and calls dedicated authe
 
 State-changing tools (create, start, stop, delete, network changes) are a later phase. They require explicit authorization, scoped credentials, destructive-action confirmation, idempotency, and audit records. Tool descriptions must state their effects clearly. No tool should expose arbitrary command execution.
 
-The MCP server is independently installable, uses environment-based configuration, and currently supports stdio for local clients. Its SDK v2 integration is tested in-memory with the official MCP Client and mocked control-plane calls. A network-hosted MCP transport, OAuth/per-customer delegated scopes, multi-node inventory aggregation, and write tools remain future work.
+The MCP server is independently installable, uses environment-based configuration, and supports stdio plus optional stateless Streamable HTTP with bearer authentication on a loopback listener. Its SDK v2 integration is tested in-memory with the official MCP Client and mocked control-plane calls. Streamable HTTP transport is implemented for compatible MCP clients behind a TLS reverse proxy, with bearer authentication and DNS-rebinding protections. OAuth authorization flows, automatic ChatGPT account linking, multi-node inventory aggregation, and write tools remain future work.
 
 ## Compatibility and release policy
 

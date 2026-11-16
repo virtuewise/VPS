@@ -19,7 +19,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .tenancy import audit, hash_password, initialize_tenancy, verify_password
 from .scheduler import choose_node
 
@@ -35,7 +35,9 @@ SESSION_COOKIE_SECURE = os.getenv("VPS_SESSION_COOKIE_SECURE", "false").lower() 
 SESSION_TTL_SECONDS = 12 * 60 * 60
 SESSION_COOKIE = "vwps_session"
 MCP_READ_TOKEN = os.getenv("VPS_MCP_READ_TOKEN", "")
-app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.6.0")
+MCP_SCOPES = {"health.read", "vms.read", "nodes.read", "resources.read"}
+MCP_ADMIN_SCOPES = {"nodes.read", "resources.read"}
+app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.7.0")
 _worker_task: asyncio.Task | None = None
 
 
@@ -62,6 +64,14 @@ def initialize_database() -> None:
             used_at INTEGER, created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         connection.commit()
     initialize_tenancy(DATABASE_PATH, ADMIN_PASSWORD)
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS mcp_api_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id),
+            scopes_json TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER,
+            last_used_at INTEGER, created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_api_tokens(user_id,revoked_at,expires_at)")
+        connection.commit()
 
 
 @app.on_event("startup")
@@ -211,6 +221,31 @@ class CloudInitRequest(BaseModel):
     ssh_public_key: str = Field(min_length=40, max_length=8192, pattern=r"^(?:ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\r\n]{0,100})?$")
 
 
+class MCPTokenCreateRequest(BaseModel):
+    user_id: int = Field(ge=1)
+    label: str = Field(min_length=2, max_length=80)
+    scopes: list[str] = Field(min_length=1, max_length=4)
+    expires_in_days: int = Field(default=30, ge=1, le=365)
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("Token label must contain at least two non-space characters.")
+        return value
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("MCP scopes must not contain duplicates.")
+        unknown = sorted(set(value) - MCP_SCOPES)
+        if unknown:
+            raise ValueError("Unknown MCP scopes: " + ", ".join(unknown))
+        return value
+
+
 class NodeEnrollmentRequest(BaseModel):
     name: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     hostname: str = Field(min_length=1, max_length=253)
@@ -239,7 +274,7 @@ class CreateVMRequest(BaseModel):
 
 @app.get("/api/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.6.0"}
+    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.7.0"}
 
 
 @app.get("/api/auth/session", tags=["authentication"])
@@ -537,20 +572,93 @@ def preview_node_placement(request: PlacementRequest, admin: dict[str, Any] = De
     return {"placement": selected, "reserved": False, "note": "Preview only; provisioning is not yet routed to multi-node agents."}
 
 
-def require_mcp_read_token(request: Request) -> None:
-    """Dedicated, read-only machine credential for the isolated MCP service."""
+@app.post("/api/mcp/tokens", tags=["mcp"])
+def create_mcp_token(request: MCPTokenCreateRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Create a customer- or administrator-scoped read-only MCP bearer token; reveal it once."""
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        target = connection.execute("SELECT id,username,role,active FROM users WHERE id=?", (request.user_id,)).fetchone()
+        if not target or not target[3]:
+            raise HTTPException(status_code=404, detail="Active token owner not found.")
+        if target[2] != "admin" and set(request.scopes) & MCP_ADMIN_SCOPES:
+            raise HTTPException(status_code=422, detail="Customer tokens cannot receive infrastructure-wide node or host-resource scopes.")
+        token = secrets.token_urlsafe(32)
+        expires_at = int(time.time()) + request.expires_in_days * 86400
+        cursor = connection.execute(
+            "INSERT INTO mcp_api_tokens(token_hash,label,user_id,scopes_json,expires_at,created_by) VALUES(?,?,?,?,?,?)",
+            (hashlib.sha256(token.encode("utf-8")).hexdigest(), request.label.strip(), request.user_id,
+             json.dumps(sorted(request.scopes)), expires_at, admin["id"]),
+        )
+        connection.commit()
+        token_id = cursor.lastrowid
+    audit(DATABASE_PATH, admin, "mcp.token.create", str(token_id), f"owner={target[1]}; scopes={','.join(sorted(request.scopes))}; expires_at={expires_at}")
+    return {"id": token_id, "label": request.label.strip(), "user_id": request.user_id,
+            "username": target[1], "scopes": sorted(request.scopes), "expires_at": expires_at,
+            "token": token, "warning": "Store this token securely; it will not be shown again."}
+
+
+@app.get("/api/mcp/tokens", tags=["mcp"])
+def list_mcp_tokens(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("""SELECT t.id,t.label,t.user_id,u.username,t.scopes_json,t.expires_at,
+            t.revoked_at,t.last_used_at,t.created_at FROM mcp_api_tokens t
+            JOIN users u ON u.id=t.user_id ORDER BY t.id DESC""").fetchall()
+    return {"items": [{**{key: row[key] for key in row.keys() if key != "scopes_json"},
+                       "scopes": json.loads(row["scopes_json"])} for row in rows]}
+
+
+@app.post("/api/mcp/tokens/{token_id}/revoke", tags=["mcp"])
+def revoke_mcp_token(token_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute("SELECT label,revoked_at FROM mcp_api_tokens WHERE id=?", (token_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="MCP token not found.")
+        if row[1] is None:
+            connection.execute("UPDATE mcp_api_tokens SET revoked_at=? WHERE id=?", (int(time.time()), token_id))
+            connection.commit()
+    if row[1] is None:
+        audit(DATABASE_PATH, admin, "mcp.token.revoke", str(token_id), row[0])
+    return {"id": token_id, "revoked": True}
+
+
+def require_mcp_read_token(request: Request) -> dict[str, Any]:
+    """Authenticate a global admin token or a hashed, scoped, expiring customer token."""
     if request.method != "GET":
         raise HTTPException(status_code=405, detail="MCP integration credential is read-only.")
-    if len(MCP_READ_TOKEN) < 32:
-        raise HTTPException(status_code=503, detail="MCP read credential is not configured on the control plane.")
     authorization = request.headers.get("authorization", "")
     supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
-    if not supplied or not hmac.compare_digest(supplied, MCP_READ_TOKEN):
+    if not supplied:
         raise HTTPException(status_code=401, detail="MCP read credential is invalid.")
+    if len(MCP_READ_TOKEN) >= 32 and hmac.compare_digest(supplied, MCP_READ_TOKEN):
+        return {"token_id": None, "user_id": None, "role": "admin", "scopes": set(MCP_SCOPES), "global": True}
+    token_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute("""SELECT t.id,t.user_id,t.scopes_json,t.expires_at,t.revoked_at,u.role,u.active
+            FROM mcp_api_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=?""", (token_hash,)).fetchone()
+        if not row or row[4] is not None or row[3] <= int(time.time()) or not row[6]:
+            raise HTTPException(status_code=401, detail="MCP read credential is invalid, expired, revoked, or inactive.")
+        try:
+            scopes = set(json.loads(row[2]))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=401, detail="MCP credential metadata is invalid.") from None
+        if not scopes or not scopes <= MCP_SCOPES or (row[5] != "admin" and scopes & MCP_ADMIN_SCOPES):
+            raise HTTPException(status_code=403, detail="MCP credential scopes are no longer permitted for this account.")
+        connection.execute("UPDATE mcp_api_tokens SET last_used_at=? WHERE id=?", (int(time.time()), row[0]))
+        connection.commit()
+    return {"token_id": row[0], "user_id": row[1], "role": row[5], "scopes": scopes, "global": False}
 
 
-@app.get("/api/integrations/mcp/health", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-async def mcp_health() -> dict[str, Any]:
+def require_mcp_scope(context: dict[str, Any], scope: str) -> dict[str, Any]:
+    if scope not in context["scopes"]:
+        raise HTTPException(status_code=403, detail=f"MCP token requires the {scope} scope.")
+    return context
+
+
+@app.get("/api/integrations/mcp/health", tags=["mcp"])
+async def mcp_health(context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "health.read")
+    if context["role"] != "admin":
+        return {"control_plane": "ok"}
     result: dict[str, Any] = {"control_plane": "ok", "agent_configured": agent_configured(), "agent_online": False}
     if agent_configured():
         try:
@@ -562,26 +670,41 @@ async def mcp_health() -> dict[str, Any]:
     return result
 
 
-@app.get("/api/integrations/mcp/nodes", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-def mcp_nodes() -> dict[str, Any]:
+@app.get("/api/integrations/mcp/nodes", tags=["mcp"])
+def mcp_nodes(context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "nodes.read")
     return list_nodes()
 
 
-@app.get("/api/integrations/mcp/nodes/{node_id}", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-def mcp_node_detail(node_id: int) -> dict[str, Any]:
+@app.get("/api/integrations/mcp/nodes/{node_id}", tags=["mcp"])
+def mcp_node_detail(node_id: int, context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "nodes.read")
     for node in list_nodes()["items"]:
         if node["id"] == node_id:
             return node
     raise HTTPException(status_code=404, detail="Node not found.")
 
 
-@app.get("/api/integrations/mcp/vms", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-async def mcp_vms() -> dict[str, Any]:
-    return await agent_request("GET", "/v1/vms")
+@app.get("/api/integrations/mcp/vms", tags=["mcp"])
+async def mcp_vms(context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "vms.read")
+    inventory = await agent_request("GET", "/v1/vms")
+    if context["role"] == "admin":
+        return inventory
+    items = inventory.get("items", []) if isinstance(inventory, dict) else inventory
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        owned = {row[0] for row in connection.execute("SELECT vm_name FROM vm_ownership WHERE user_id=?", (context["user_id"],)).fetchall()}
+    return {"items": [vm for vm in items if isinstance(vm, dict) and vm.get("name") in owned]}
 
 
-@app.get("/api/integrations/mcp/vms/{name}", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-async def mcp_vm_detail(name: str) -> dict[str, Any]:
+@app.get("/api/integrations/mcp/vms/{name}", tags=["mcp"])
+async def mcp_vm_detail(name: str, context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "vms.read")
+    if context["role"] != "admin":
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            owned = connection.execute("SELECT 1 FROM vm_ownership WHERE user_id=? AND vm_name=?", (context["user_id"], name)).fetchone()
+        if not owned:
+            raise HTTPException(status_code=404, detail="Virtual machine not found.")
     inventory = await agent_request("GET", "/v1/vms")
     items = inventory.get("items", []) if isinstance(inventory, dict) else inventory
     for vm in items:
@@ -590,8 +713,11 @@ async def mcp_vm_detail(name: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail="Virtual machine not found.")
 
 
-@app.get("/api/integrations/mcp/resources", tags=["mcp"], dependencies=[Depends(require_mcp_read_token)])
-async def mcp_resources() -> dict[str, Any]:
+@app.get("/api/integrations/mcp/resources", tags=["mcp"])
+async def mcp_resources(context: dict[str, Any] = Depends(require_mcp_read_token)) -> dict[str, Any]:
+    require_mcp_scope(context, "resources.read")
+    if context["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Host-wide resource telemetry is restricted to administrator-scoped MCP tokens.")
     return await agent_request("GET", "/v1/monitor")
 
 

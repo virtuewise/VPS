@@ -65,6 +65,18 @@ async function loadMonitor() {
     target.innerHTML=metrics.map(([label,value,pct])=>`<article class="resource-card"><span class="muted">${label}</span><b>${value}</b><div class="meter"><span style="width:${Math.min(100,Math.max(0,Number(pct)||0))}%"></span></div></article>`).join("");
   } catch(error) { target.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
+function updateMcpScopeOptions() {
+  const selected = byId('mcp-token-user')?.selectedOptions?.[0];
+  const customer = selected?.textContent?.endsWith('(user)');
+  for (const checkbox of document.querySelectorAll('#mcp-token-form input[name="scopes"]')) {
+    if (checkbox.value === 'nodes.read' || checkbox.value === 'resources.read') {
+      checkbox.disabled = Boolean(customer);
+      if (customer) checkbox.checked = false;
+    }
+  }
+}
+byId('mcp-token-user').addEventListener('change', updateMcpScopeOptions);
+
 async function loadAdminPanel() {
   if (!currentUser || currentUser.role !== 'admin') { byId('administration').hidden = true; byId('admin-nav').hidden = true; return; }
   byId('admin-nav').hidden = false;
@@ -72,9 +84,13 @@ async function loadAdminPanel() {
   const result = await api('/api/users');
   const select = byId('transfer-user-select'); select.replaceChildren();
   for (const u of result.items) if (u.active && u.role === 'user') select.add(new Option(u.username, String(u.id)));
+  const tokenOwner = byId('mcp-token-user'); tokenOwner.replaceChildren();
+  for (const u of result.items) if (u.active) tokenOwner.add(new Option(`${u.username} (${u.role})`, String(u.id)));
+  updateMcpScopeOptions();
   byId('users-content').innerHTML = result.items.map(u => '<div class="user-row" data-user-id="'+u.id+'"><b>'+escapeHtml(u.username)+'</b><select data-field="role"><option value="user" '+(u.role==='user'?'selected':'')+'>Customer</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrator</option></select><input data-field="quota" type="number" min="0" max="1000" value="'+u.vm_quota+'"><select data-field="active"><option value="true" '+(u.active?'selected':'')+'>Active</option><option value="false" '+(!u.active?'selected':'')+'>Suspended</option></select><button class="secondary" data-user-action="save">Save</button><button class="danger" data-user-action="delete" '+(u.id===currentUser.id?'disabled':'')+'>Delete</button></div>').join('') || '<p>No accounts yet.</p>';
-  const log = await api('/api/audit?limit=30');
+  const [log,tokens] = await Promise.all([api('/api/audit?limit=30'), api('/api/mcp/tokens')]);
   byId('audit-content').innerHTML = log.items.map(e => '<div class="audit-row"><b>'+escapeHtml(e.action)+'</b> · '+escapeHtml(e.actor_username)+' · '+escapeHtml(e.target)+' <span class="muted">'+escapeHtml(e.created_at)+'</span></div>').join('') || 'No events recorded.';
+  byId('mcp-tokens-content').innerHTML = tokens.items.map(t => '<div class="mcp-token-row"><div><b>'+escapeHtml(t.label)+'</b><span class="muted">'+escapeHtml(t.username)+' ? '+escapeHtml(t.scopes.join(', '))+' ? expires '+escapeHtml(new Date(t.expires_at*1000).toLocaleDateString())+'</span><span class="muted">'+(t.revoked_at?'Revoked':t.expires_at*1000<Date.now()?'Expired':'Active')+'</span></div><button type="button" class="danger" data-mcp-token-revoke="'+t.id+'" '+(t.revoked_at?'disabled':'')+'>Revoke</button></div>').join('') || 'No scoped MCP tokens issued.';
 }
 
 async function loadDashboard() {
@@ -105,6 +121,26 @@ byId("create-vm-form").addEventListener("submit",async event=>{
 });
 byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
 byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });
+byId('mcp-token-form').addEventListener('submit', async event => {
+  event.preventDefault(); const form=event.currentTarget; if(!form.reportValidity()) return;
+  const values=new FormData(form), scopes=[...form.querySelectorAll('input[name="scopes"]:checked')].map(input=>input.value);
+  if(!scopes.length){notice('Select at least one MCP permission.');return;}
+  try {
+    const result=await api('/api/mcp/tokens',{method:'POST',body:JSON.stringify({user_id:Number(values.get('user_id')),label:String(values.get('label')).trim(),scopes,expires_in_days:Number(values.get('expires_in_days'))})});
+    byId('mcp-token-value').textContent=result.token; byId('mcp-token-once').hidden=false;
+    notice('MCP token issued. Copy and store it securely; it cannot be retrieved later.'); await loadAdminPanel();
+  } catch(error){notice(error.message);}
+});
+byId('mcp-token-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(byId('mcp-token-value').textContent); notice('MCP token copied.'); }
+  catch { notice('Clipboard access unavailable. Select and copy the token manually.'); }
+});
+byId('mcp-tokens-content').addEventListener('click', async event => {
+  const button=event.target.closest('button[data-mcp-token-revoke]'); if(!button)return;
+  if(!confirm('Revoke this MCP token immediately? Existing clients using it will lose access.'))return;
+  try { await api('/api/mcp/tokens/'+button.dataset.mcpTokenRevoke+'/revoke',{method:'POST'}); notice('MCP token revoked.'); await loadAdminPanel(); }
+  catch(error){notice(error.message);}
+});
 byId('transfer-vm-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f), name=String(v.get('vm_name')).trim(), id=String(v.get('user_id')); if(!confirm('Transfer VM '+name+' to this customer?')) return; try { await api('/api/users/'+id+'/transfer-vm?vm_name='+encodeURIComponent(name),{method:'POST'}); notice('VM ownership transferred.'); f.reset(); } catch(e) { notice(e.message); } });
 byId("refresh-button").addEventListener("click",loadDashboard);
 byId("monitor-refresh").addEventListener("click",loadMonitor);
