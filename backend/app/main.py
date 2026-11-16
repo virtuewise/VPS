@@ -215,7 +215,7 @@ async def agent_request(method: str, path: str, payload: dict[str, Any] | None =
         raise HTTPException(status_code=502, detail="Hyper-V agent returned an invalid response.") from None
 
 
-@app.get("/api/agent/status", tags=["agent"], dependencies=[Depends(require_admin)])
+@app.get("/api/agent/status", tags=["agent"], dependencies=[Depends(require_user)])
 async def get_agent_status() -> dict[str, Any]:
     if not agent_configured():
         return {"configured": False, "online": False, "message": "Agent connection not configured"}
@@ -226,47 +226,82 @@ async def get_agent_status() -> dict[str, Any]:
         return {"configured": True, "online": False, "message": str(exc.detail)}
 
 
-@app.get("/api/vms", tags=["instances"], dependencies=[Depends(require_admin)])
-async def list_vms() -> dict[str, Any]:
-    return await agent_request("GET", "/v1/vms")
+@app.get("/api/vms", tags=["instances"])
+async def list_vms(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    result = await agent_request("GET", "/v1/vms")
+    if user["role"] == "admin": return result
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        owned = {row[0] for row in connection.execute("SELECT vm_name FROM vm_ownership WHERE user_id=?", (user["id"],)).fetchall()}
+    result["items"] = [vm for vm in result.get("items", []) if vm.get("name") in owned]
+    return result
 
 
-@app.get("/api/switches", tags=["agent"], dependencies=[Depends(require_admin)])
+@app.get("/api/switches", tags=["agent"], dependencies=[Depends(require_user)])
 async def list_switches() -> dict[str, Any]:
     return await agent_request("GET", "/v1/switches")
 
 
-@app.get("/api/monitor", tags=["monitoring"], dependencies=[Depends(require_admin)])
+@app.get("/api/monitor", tags=["monitoring"], dependencies=[Depends(require_user)])
 async def get_monitor() -> dict[str, Any]:
     return await agent_request("GET", "/v1/monitor")
 
 
-@app.post("/api/vms", tags=["instances"], dependencies=[Depends(require_admin)])
-async def create_vm(request: CreateVMRequest) -> dict[str, Any]:
-    return await agent_request("POST", "/v1/vms", request.model_dump())
+@app.post("/api/vms", tags=["instances"])
+async def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if user["role"] != "admin":
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            quota = connection.execute("SELECT vm_quota FROM users WHERE id=?", (user["id"],)).fetchone()[0]
+            used = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE user_id=?", (user["id"],)).fetchone()[0]
+        if quota >= 0 and used >= quota: raise HTTPException(status_code=403, detail="Your VM quota has been reached. Contact an administrator.")
+    result = await agent_request("POST", "/v1/vms", request.model_dump())
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("INSERT OR REPLACE INTO vm_ownership(vm_name,user_id) VALUES(?,?)", (request.name, user["id"]))
+        connection.commit()
+    audit(DATABASE_PATH, user, "vm.create", request.name)
+    return result
 
 
-@app.post("/api/vms/{name}/start", tags=["instances"], dependencies=[Depends(require_admin)])
-async def start_vm(name: str) -> dict[str, Any]:
-    return await agent_request("POST", "/v1/vms/start", {"name": name})
+def authorize_vm(name: str, user: dict[str, Any]) -> None:
+    if user["role"] == "admin": return
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute("SELECT user_id FROM vm_ownership WHERE vm_name=?", (name,)).fetchone()
+    if not row or row[0] != user["id"]: raise HTTPException(status_code=404, detail="VM not found.")
 
 
-@app.post("/api/vms/{name}/stop", tags=["instances"], dependencies=[Depends(require_admin)])
-async def stop_vm(name: str) -> dict[str, Any]:
-    return await agent_request("POST", "/v1/vms/stop", {"name": name})
+@app.post("/api/vms/{name}/start", tags=["instances"])
+async def start_vm(name: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    authorize_vm(name, user)
+    result = await agent_request("POST", "/v1/vms/start", {"name": name})
+    audit(DATABASE_PATH, user, "vm.start", name)
+    return result
 
 
-@app.post("/api/vms/{name}/console", tags=["instances"], dependencies=[Depends(require_admin)])
-async def open_console(name: str) -> dict[str, Any]:
+@app.post("/api/vms/{name}/stop", tags=["instances"])
+async def stop_vm(name: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    authorize_vm(name, user)
+    result = await agent_request("POST", "/v1/vms/stop", {"name": name})
+    audit(DATABASE_PATH, user, "vm.stop", name)
+    return result
+
+
+@app.post("/api/vms/{name}/console", tags=["instances"])
+async def open_console(name: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    authorize_vm(name, user)
     return await agent_request("POST", f"/v1/vms/{name}/console")
 
 
-@app.delete("/api/vms/{name}", tags=["instances"], dependencies=[Depends(require_admin)])
-async def delete_vm(name: str, confirm_name: str, delete_disks: bool = False) -> dict[str, Any]:
-    return await agent_request("DELETE", f"/v1/vms/{name}", {"name": name, "confirm_name": confirm_name, "delete_disks": delete_disks})
+@app.delete("/api/vms/{name}", tags=["instances"])
+async def delete_vm(name: str, confirm_name: str, delete_disks: bool = False, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    authorize_vm(name, user)
+    result = await agent_request("DELETE", f"/v1/vms/{name}", {"name": name, "confirm_name": confirm_name, "delete_disks": delete_disks})
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("DELETE FROM vm_ownership WHERE vm_name=?", (name,))
+        connection.commit()
+    audit(DATABASE_PATH, user, "vm.delete", name, f"delete_disks={delete_disks}")
+    return result
 
 
-@app.get("/api/nodes", tags=["nodes"], dependencies=[Depends(require_admin)])
+@app.get("/api/nodes", tags=["nodes"], dependencies=[Depends(require_user)])
 def list_nodes() -> dict[str, list[dict[str, Any]]]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
