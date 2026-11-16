@@ -153,10 +153,17 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
     disk = (VM_ROOT / f"{name}.qcow2").resolve()
     if VM_ROOT not in disk.parents or disk.exists():
         raise HTTPException(status_code=409, detail="Managed VM disk already exists or has an invalid path.")
+    existing_names = {item.strip() for item in _run([VIRSH, "list", "--all", "--name"]).splitlines()}
+    if name in existing_names:
+        raise HTTPException(status_code=409, detail="A libvirt VM with this name already exists.")
     if switch_name and switch_name not in {x["name"] for x in list_switches()}:
         raise HTTPException(status_code=400, detail="Requested libvirt network does not exist.")
     seed_iso = None
     seed_dir = VM_ROOT / name / "cloud-init"
+    seed_iso = VM_ROOT / f"{name}-seed.iso"
+    if seed_iso.exists() or seed_dir.exists():
+        raise HTTPException(status_code=409, detail="Cloud-init seed files already exist for this VM name.")
+    domain_defined = False
     try:
         if cloud_init:
             username = cloud_init["username"]
@@ -173,7 +180,6 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
                 f"#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: {name}\n    username: {username}\n    password: '{password_hash}'\n  ssh:\n    install-server: true\n    allow-pw: false\n    authorized-keys:\n      - {json.dumps(key)}\n",
                 encoding="utf-8")
             (seed_dir / "meta-data").write_text(f"instance-id: {name}\nlocal-hostname: {name}\n", encoding="utf-8")
-            seed_iso = VM_ROOT / f"{name}-seed.iso"
             _run([CLOUD_LOCALDS, str(seed_iso), str(seed_dir / "user-data"), str(seed_dir / "meta-data")])
         _run([QEMU_IMG, "create", "-f", "qcow2", str(disk), f"{disk_gb}G"])
         xml = _domain_xml(name, memory_mb, cpu_count, disk, iso, seed_iso, switch_name)
@@ -181,14 +187,16 @@ def create_vm(*, name: str, memory_mb: int, disk_gb: int, cpu_count: int, iso_pa
         xml_path.write_text(xml, encoding="utf-8")
         try:
             _run([VIRSH, "define", str(xml_path)])
+            domain_defined = True
         finally:
             xml_path.unlink(missing_ok=True)
         return {"name": name, "state": "shut off", "disk": str(disk)}
     except Exception:
-        try:
-            _run([VIRSH, "undefine", name, "--nvram"])
-        except Exception:
-            pass
+        if domain_defined:
+            try:
+                _run([VIRSH, "undefine", name, "--nvram"])
+            except Exception:
+                pass
         disk.unlink(missing_ok=True)
         if seed_iso:
             seed_iso.unlink(missing_ok=True)
