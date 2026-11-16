@@ -29,8 +29,8 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 class CloudInitRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
-    password_hash: str = Field(min_length=90, max_length=200, pattern=r"^\\$6\\$(?:rounds=[0-9]+\\$)?[A-Za-z0-9./]{1,16}\\$[A-Za-z0-9./]{86}$")
-    ssh_public_key: str = Field(min_length=40, max_length=8192, pattern=r"^(?:ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\\r\\n]{0,100})?$")
+    password_hash: str = Field(min_length=90, max_length=200, pattern=r"^\$6\$(?:rounds=[0-9]+\$)?[A-Za-z0-9./]{1,16}\$[A-Za-z0-9./]{86}$")
+    ssh_public_key: str = Field(min_length=40, max_length=8192, pattern=r"^(?:ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\r\n]{0,100})?$")
 
 
 class CreateVMRequest(BaseModel):
