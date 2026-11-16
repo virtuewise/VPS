@@ -44,6 +44,10 @@ def initialize_database() -> None:
         connection.execute("""CREATE TABLE IF NOT EXISTS nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, hostname TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL, hostname TEXT NOT NULL, expires_at INTEGER NOT NULL,
+            used_at INTEGER, created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         connection.commit()
     initialize_tenancy(DATABASE_PATH, ADMIN_PASSWORD)
 
@@ -117,6 +121,15 @@ class CloudInitRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
     password_hash: str = Field(min_length=90, max_length=200, pattern=r"^\$6\$(?:rounds=[0-9]+\$)?[A-Za-z0-9./]{1,16}\$[A-Za-z0-9./]{86}$")
     ssh_public_key: str = Field(min_length=40, max_length=8192, pattern=r"^(?:ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\r\n]{0,100})?$")
+
+
+class NodeEnrollmentRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    hostname: str = Field(min_length=1, max_length=253)
+
+
+class NodeEnrollRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=128)
 
 
 class CreateVMRequest(BaseModel):
@@ -374,6 +387,47 @@ def list_nodes() -> dict[str, list[dict[str, Any]]]:
         connection.row_factory = sqlite3.Row
         rows = connection.execute("SELECT id, name, hostname, status, created_at FROM nodes ORDER BY id").fetchall()
     return {"items": [dict(row) for row in rows]}
+
+
+@app.post("/api/nodes/enrollment-tokens", tags=["nodes"])
+def create_node_enrollment_token(request: NodeEnrollmentRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Issue a one-time, short-lived node enrollment secret. Only its hash is stored."""
+    token = secrets.token_urlsafe(32)
+    expires_at = int(time.time()) + 900
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute(
+            "INSERT INTO node_enrollment_tokens(token_hash,name,hostname,expires_at,created_by) VALUES(?,?,?,?,?)",
+            (token_hash, request.name, request.hostname, expires_at, admin["id"]),
+        )
+        connection.commit()
+    audit(DATABASE_PATH, admin, "node.enrollment_token.created", request.name, "expires_in_seconds=900")
+    return {"token": token, "expires_at": expires_at, "expires_in_seconds": 900}
+
+
+@app.post("/api/nodes/enroll", tags=["nodes"])
+def enroll_node(request: NodeEnrollRequest) -> dict[str, Any]:
+    """Consume a one-time enrollment token and register a node identity."""
+    token_hash = hashlib.sha256(request.token.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        invitation = connection.execute(
+            "SELECT id,name,hostname,expires_at,used_at FROM node_enrollment_tokens WHERE token_hash=?",
+            (token_hash,),
+        ).fetchone()
+        if not invitation or invitation["used_at"] is not None or invitation["expires_at"] < now:
+            connection.rollback()
+            raise HTTPException(status_code=401, detail="Enrollment token is invalid, expired, or already used.")
+        connection.execute("UPDATE node_enrollment_tokens SET used_at=? WHERE id=? AND used_at IS NULL", (now, invitation["id"]))
+        cursor = connection.execute(
+            "INSERT INTO nodes(name,hostname,status) VALUES(?,?,?)",
+            (invitation["name"], invitation["hostname"], "registered"),
+        )
+        node_id = cursor.lastrowid
+        connection.commit()
+    return {"registered": True, "node": {"id": node_id, "name": invitation["name"], "hostname": invitation["hostname"], "status": "registered"}}
 
 
 @app.get("/", include_in_schema=False)
