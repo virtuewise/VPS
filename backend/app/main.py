@@ -44,6 +44,13 @@ def initialize_database() -> None:
         connection.execute("""CREATE TABLE IF NOT EXISTS nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, hostname TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)").fetchall()}
+        if "token_hash" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN token_hash TEXT")
+        if "last_seen" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN last_seen INTEGER")
+        if "resources_json" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN resources_json TEXT NOT NULL DEFAULT '{}'")
         connection.execute("""CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL, hostname TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -385,8 +392,13 @@ async def delete_vm(name: str, confirm_name: str, delete_disks: bool = False, us
 def list_nodes() -> dict[str, list[dict[str, Any]]]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute("SELECT id, name, hostname, status, created_at FROM nodes ORDER BY id").fetchall()
-    return {"items": [dict(row) for row in rows]}
+        rows = connection.execute("SELECT id, name, hostname, status, created_at, last_seen, resources_json FROM nodes ORDER BY id").fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["resources"] = json.loads(item.pop("resources_json") or "{}")
+        items.append(item)
+    return {"items": items}
 
 
 @app.post("/api/nodes/enrollment-tokens", tags=["nodes"])
@@ -427,7 +439,42 @@ def enroll_node(request: NodeEnrollRequest) -> dict[str, Any]:
         )
         node_id = cursor.lastrowid
         connection.commit()
-    return {"registered": True, "node": {"id": node_id, "name": invitation["name"], "hostname": invitation["hostname"], "status": "registered"}}
+    node_token = secrets.token_urlsafe(48)
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("UPDATE nodes SET token_hash=? WHERE id=?", (hashlib.sha256(node_token.encode()).hexdigest(), node_id))
+        connection.commit()
+    return {"registered": True, "node": {"id": node_id, "name": invitation["name"], "hostname": invitation["hostname"], "status": "registered"}, "node_token": node_token, "credential_note": "Store this token securely; it is shown only once."}
+
+
+@app.post("/api/nodes/{node_id}/heartbeat", tags=["nodes"])
+def node_heartbeat(node_id: int, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
+    if not supplied:
+        raise HTTPException(status_code=401, detail="Node credential required.")
+    digest = hashlib.sha256(supplied.encode()).hexdigest()
+    now = int(time.time())
+    resources = {key: payload[key] for key in ("cpu_total", "cpu_used", "memory_total_mb", "memory_used_mb", "storage_total_gb", "storage_used_gb", "provider", "agent_version") if key in payload}
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        cursor = connection.execute(
+            "UPDATE nodes SET status='online',last_seen=?,resources_json=? WHERE id=? AND token_hash=?",
+            (now, json.dumps(resources, separators=(",", ":")), node_id, digest),
+        )
+        connection.commit()
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=401, detail="Node identity is invalid or revoked.")
+    return {"accepted": True, "node_id": node_id, "received_at": now}
+
+
+@app.post("/api/nodes/{node_id}/revoke", tags=["nodes"])
+def revoke_node(node_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, bool]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        cursor = connection.execute("UPDATE nodes SET status='revoked',token_hash=NULL WHERE id=?", (node_id,))
+        connection.commit()
+    if cursor.rowcount != 1:
+        raise HTTPException(status_code=404, detail="Node not found.")
+    audit(DATABASE_PATH, admin, "node.revoke", str(node_id))
+    return {"success": True}
 
 
 @app.get("/", include_in_schema=False)
