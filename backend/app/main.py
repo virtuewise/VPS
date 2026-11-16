@@ -256,7 +256,7 @@ def agent_configured() -> bool:
 
 async def agent_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     if not agent_configured():
-        raise HTTPException(status_code=503, detail="Hyper-V agent is not configured. Set VPS_AGENT_URL and VPS_AGENT_TOKEN.")
+        raise HTTPException(status_code=503, detail="Node agent is not configured. Set VPS_AGENT_URL and VPS_AGENT_TOKEN.")
     parsed = urlparse(AGENT_URL)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise HTTPException(status_code=503, detail="Invalid VPS_AGENT_URL configuration.")
@@ -266,11 +266,11 @@ async def agent_request(method: str, path: str, payload: dict[str, Any] | None =
         async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
             response = await client.request(method, f"{AGENT_URL}{path}", json=payload, headers={"Authorization": f"Bearer {AGENT_TOKEN}"})
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Hyper-V agent request timed out.") from None
+        raise HTTPException(status_code=504, detail="Node agent request timed out.") from None
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Could not connect to the Hyper-V agent.") from None
+        raise HTTPException(status_code=502, detail="Could not connect to the node agent.") from None
     if response.status_code >= 400:
-        detail = "Hyper-V agent rejected the request."
+        detail = "Node agent rejected the request."
         try:
             detail = response.json().get("detail", detail)
         except ValueError:
@@ -279,7 +279,7 @@ async def agent_request(method: str, path: str, payload: dict[str, Any] | None =
     try:
         return response.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail="Hyper-V agent returned an invalid response.") from None
+        raise HTTPException(status_code=502, detail="Node agent returned an invalid response.") from None
 
 
 @app.get("/api/agent/status", tags=["agent"], dependencies=[Depends(require_user)])
