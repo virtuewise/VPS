@@ -15,7 +15,7 @@ A plugin is an independently versioned package with a manifest, declared capabil
 - **Identity/billing plugins:** connect external identity and metering systems.
 - **Automation plugins:** expose narrowly scoped workflows and event handlers.
 
-## Manifest contract (version 1 implemented for built-in providers)
+## Provider manifest contract (version 1 implemented for built-in and signed worker providers)
 
 Each plugin must declare:
 
@@ -27,7 +27,7 @@ Each plugin must declare:
 - Health/readiness checks and resource limits.
 - License, source repository, maintainer, and integrity digest.
 
-A provider must fail closed when its API version or declared capability is unavailable. The v1 provider schema is `agent/provider-manifests/schema.json`; Hyper-V and libvirt manifests are validated at agent startup. Only the `builtin` runtime is accepted today. Capability declarations are validated against a fixed allowlist but are not yet an authorization engine or a grant to execute operations. External package installation and execution remain disabled.
+A provider must fail closed when its API version or declared capability is unavailable. The v1 provider schema is `agent/provider-manifests/schema.json`; Hyper-V and libvirt manifests are validated at startup. Signed third-party `python-worker` packages are also supported through the administrator-managed registry and isolated runtime described below. Capabilities are enforced by the typed worker adapter; they limit which VirtueWise operations are dispatched, not arbitrary Python behavior inside the sandbox.
 
 ## Security requirements
 
@@ -37,7 +37,7 @@ A provider must fail closed when its API version or declared capability is unava
 4. Third-party plugins run out-of-process with restricted OS identities, filesystem access, network egress, CPU, and memory.
 5. All state-changing plugin actions are attributable and auditable.
 6. Installation requires an administrator action; upgrades and removal must be reversible.
-7. Production plugin packages should be signed and verified against trusted publisher keys.
+7. Provider packages are signed with Ed25519 and verified against administrator-managed trusted publisher keys.
 8. Network integrations use TLS; credentials are rotated and revocable.
 
 ## ChatGPT integration
@@ -71,8 +71,15 @@ The MCP server is independently installable, uses environment-based configuratio
 1. Publish API conventions, plugin manifest schema, and capability vocabulary.
 2. Extract provider interface and add conformance tests.
 3. [x] Build the MCP server with read-only tools.
-4. Add plugin discovery, install/enable/disable, and health reporting.
-5. Add isolated plugin execution, signing, permissions, and lifecycle management.
+4. [x] Add provider package install/enable/disable, health checks and audit journal.
+5. [x] Add rootless Docker worker isolation, package signing, capability checks and lifecycle management.
 6. Add carefully scoped write tools and event-driven extensions.
 
-The provider plugin runtime remains a design contract; the read-only MCP server is implemented as documented above. Do not infer that third-party plugin execution or state-changing MCP tools are available.
+The provider plugin runtime v1 and read-only MCP server are implemented as documented above. State-changing MCP tools remain disabled.
+
+
+## Provider runtime v1 implementation status
+
+The repository now includes Ed25519-signed `.vwpkg` packages, administrator-managed trust keys, SHA-256 integrity checks, strict archive validation, a local provider registry, install/enable/disable/rollback commands, API compatibility checks, capability-gated typed worker calls, and a short-lived worker process. Third-party providers are selected with `VPS_PROVIDER=plugin:<id>` only after installation and explicit enablement. Runtime activation re-verifies the package signature against the current trust store.
+
+Untrusted provider code is only enabled through a digest-pinned rootless Docker worker with network disabled, read-only filesystem, dropped capabilities, non-root UID, resource limits, and no-new-privileges. The local subprocess mode is reserved for automated tests. This is container isolation, not a formally verified sandbox; deploy Docker rootless under a dedicated unprivileged service account, keep it patched, and do not mount host sockets/secrets. A separate narrow privileged virtualization broker remains the recommended hardening step before accepting arbitrary external publishers at scale.

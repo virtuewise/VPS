@@ -688,6 +688,11 @@ def revoke_node(node_id: int, admin: dict[str, Any] = Depends(require_admin)) ->
     return {"success": True}
 
 
+@app.get("/developers", include_in_schema=False)
+def developer_portal() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "developers.html")
+
+
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")

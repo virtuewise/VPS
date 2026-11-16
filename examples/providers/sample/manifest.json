@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "org.example.provider.sample",
+  "name": "Example VirtueWise Provider",
+  "version": "1.0.0",
+  "provider_api_min": "1.0.0",
+  "provider_api_max": "1.0.0",
+  "provider_type": "virtualization",
+  "runtime": "python-worker",
+  "entrypoint": "provider:Provider",
+  "capabilities": ["inventory.read", "host.metrics.read"],
+  "maintainer": "Example Organization",
+  "license": "MIT"
+}

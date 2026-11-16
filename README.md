@@ -17,6 +17,10 @@ An open-source, self-hostable VPS control plane designed to start on one compute
 - Hyper-V virtual NIC, MAC address and guest IP inventory
 - VM deletion with exact-name confirmation; disk deletion is separately opt-in and restricted to the managed VM root
 - Host CPU, physical RAM and VM-storage-volume capacity sampling
+- Node heartbeat reporting, resource-aware placement preview, and durable asynchronous VM provisioning jobs
+- CPU, RAM and storage quotas with transactional allocation reservations
+- First-party read-only MCP server and a signed, versioned provider SDK with administrator-controlled package lifecycle
+- Searchable developer portal at `/developers`
 
 ## Development prerequisites
 
@@ -44,16 +48,16 @@ Open the dashboard at http://localhost:8000 and sign in with username `admin` an
 
 Follow the Windows 11 Hyper-V setup guide, then the control-plane/agent setup guide. For the current local-only setup, run the agent and backend directly on Windows with the agent bound to 127.0.0.1.
 
-See docs/HYPERV-ADVANCED-FEATURES.md for console, cloud-init, SSH, network reporting, deletion safeguards and monitoring setup.
+See docs/HYPERV-ADVANCED-FEATURES.md for console, cloud-init, SSH, network reporting, deletion safeguards and monitoring setup. Visit `/developers` for the searchable developer portal, provider SDK, signed package workflow and MCP integration guide.
 
 Use the administrator's **Customer accounts** panel to create customers, set VM-count quotas, change roles, suspend/reactivate accounts, transfer VM ownership and review recent audit events. See docs/ACCOUNTS-AND-ADMINISTRATION.md for account setup and API details.
 
 ## Security and limitations
 
 - Keep the current agent and control plane bound to loopback. Do not expose them publicly.
-- The dashboard now requires a configured administrator password and session-signing secret. Non-admin accounts are limited to their recorded VMs and per-user instance-count quotas. Existing VMs created before ownership tracking remain administrator-only until an ownership-transfer workflow is added. CPU/RAM/disk resource quotas, billing, MFA and production hardening remain outstanding.
+- The dashboard requires a configured administrator password and session-signing secret. Customer accounts have ownership checks and VM/CPU/RAM/storage quotas. Billing, MFA, password recovery and production hardening remain outstanding.
 - The Compose port is bound to localhost by default. For remote access, use a properly configured HTTPS reverse proxy, set VPS_SESSION_COOKIE_SECURE=true, and apply firewall restrictions. Do not expose the development server directly.
-- Remote agent connections require HTTPS; secure enrollment, mutual TLS, role-based authorization, audit logging and a security review remain outstanding.
+- Node enrollment uses single-use expiring credentials, per-node tokens, heartbeats and administrator revocation. Mutual TLS, external security review and production-grade rate limiting remain outstanding.
 - The console action launches VMConnect on the Windows host; it is not a browser console.
 - Cloud-init requires a compatible Ubuntu Server ISO and Windows ADK oscdimg.exe. Test unattended installation in a disposable VM first.
 - Guest IP reporting depends on Hyper-V integration services and guest network configuration.
@@ -67,6 +71,10 @@ The software is intended to be free and open source. Running real VPS instances 
 ## License
 
 MIT. See LICENSE.
+
+## Developer portal and provider SDK
+
+Open `/developers` in the running dashboard for the searchable developer portal. The v1 provider SDK includes versioned manifests, explicit capabilities, conformance tests, Ed25519-signed packages, trust-store verification, a rootless Docker worker profile, and install/enable/disable/upgrade/rollback/uninstall lifecycle commands. See [Provider SDK](docs/PROVIDER-SDK.md) and [Plugin architecture](docs/PLUGIN-SYSTEM.md). Third-party providers require a Linux node with rootless Docker configured and an image pinned by digest; the Windows Hyper-V provider remains built in.
 
 ## Virtualization providers
 

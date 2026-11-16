@@ -31,7 +31,8 @@ class ProviderManifest(BaseModel):
     provider_api_min: str
     provider_api_max: str
     provider_type: Literal["virtualization"]
-    runtime: Literal["builtin"]
+    runtime: Literal["builtin", "python-worker"]
+    entrypoint: str | None = Field(default=None, max_length=160)
     capabilities: list[str] = Field(min_length=1, max_length=32)
     maintainer: str = Field(min_length=2, max_length=120)
     license: str = Field(min_length=1, max_length=40)
@@ -57,6 +58,12 @@ class ProviderManifest(BaseModel):
 
     @model_validator(mode="after")
     def valid_range(self) -> "ProviderManifest":
+        if self.runtime == "python-worker" and not self.entrypoint:
+            raise ValueError("python-worker providers must declare an entrypoint.")
+        if self.runtime == "builtin" and self.entrypoint is not None:
+            raise ValueError("builtin providers must not declare an entrypoint.")
+        if self.entrypoint is not None and not re.fullmatch(r"[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*", self.entrypoint):
+            raise ValueError("Invalid provider entrypoint.")
         if _version(self.provider_api_min) > _version(self.provider_api_max):
             raise ValueError("provider_api_min must not exceed provider_api_max.")
         return self

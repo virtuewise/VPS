@@ -44,7 +44,10 @@
       "const": "virtualization"
     },
     "runtime": {
-      "const": "builtin"
+      "enum": [
+        "builtin",
+        "python-worker"
+      ]
     },
     "capabilities": {
       "type": "array",
@@ -71,6 +74,11 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 40
+    },
+    "entrypoint": {
+      "type": "string",
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*$"
     }
   },
   "$defs": {
@@ -78,5 +86,43 @@
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "python-worker"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "required": [
+          "entrypoint"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "builtin"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "entrypoint"
+          ]
+        }
+      }
+    }
+  ]
 }

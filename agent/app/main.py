@@ -11,21 +11,10 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from app.providers import hyperv as hyperv_provider, libvirt
-from app.providers.interface import validate_provider
-from app.providers.manifest import load_provider_manifest
+from app.providers.loader import load_configured_provider
 from app.heartbeat import heartbeat_config, heartbeat_loop
 
-PROVIDER_NAME = os.getenv("VPS_PROVIDER", "hyperv").strip().lower()
-if PROVIDER_NAME not in {"hyperv", "libvirt"}:
-    raise RuntimeError("VPS_PROVIDER must be either hyperv or libvirt.")
-hyperv = libvirt if PROVIDER_NAME == "libvirt" else hyperv_provider
-PROVIDER_API_VERSION = "1.0.0"
-PROVIDER_MANIFEST = load_provider_manifest(
-    Path(__file__).resolve().parents[1] / "provider-manifests" / f"{PROVIDER_NAME}.json",
-    api_version=PROVIDER_API_VERSION,
-)
-validate_provider(hyperv)
+hyperv, PROVIDER_MANIFEST, PROVIDER_NAME = load_configured_provider()
 
 AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
 if len(AGENT_TOKEN) < 32:

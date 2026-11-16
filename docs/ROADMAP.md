@@ -63,13 +63,17 @@
 ## Milestone 6 â€” Plugin ecosystem and AI integrations
 
 - [x] Draft plugin architecture, capability security model, and integration phases
-- [x] Versioned provider manifest schema, semantic-version compatibility checks, and capability allowlist (built-in providers only)
-- [x] Initial provider interface contract and developer starter guide
-- [x] Initial shared provider contract/conformance tests (external SDK packaging and real-host certification remain open)
+- [x] Versioned provider manifest schema, semantic-version compatibility checks, and capability allowlist
+- [x] Versioned provider API 1.0.0 contract and developer starter guide
+- [x] Shared provider contract/conformance tests and signed sample provider package
 - [x] First-party MCP server with six read-only infrastructure inspection tools and a dedicated scoped API credential
-- [ ] ChatGPT integration guide, per-customer delegated scopes/OAuth, and deployment packaging
-- [ ] Isolated plugin runtime, signing, health checks, and lifecycle management
-- [ ] Plugin SDK, sample plugins, and developer documentation
+- [x] MCP installation and developer integration guide
+- [ ] ChatGPT hosted transport, OAuth and per-customer delegated scopes
+- [x] Signed Ed25519 provider packages, trust-store verification, SHA-256 integrity and strict archive validation
+- [x] Rootless Docker worker profile with typed capability-gated calls and resource restrictions
+- [x] Provider install, upgrade, enable, disable, rollback, uninstall, health-check and audit journal commands
+- [x] Provider SDK documentation, sample package and searchable developer portal
+- [ ] Real rootless-Docker sandbox acceptance testing and independent security review
 
 ## Engineering gate â€” before public hosting
 
