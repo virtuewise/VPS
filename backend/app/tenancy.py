@@ -61,11 +61,12 @@ def initialize_tenancy(path: Path, admin_password: str, default_quota: int = 3) 
             db.execute("ALTER TABLE provisioning_jobs ADD COLUMN node_id INTEGER")
         for column, declaration in (("reconciliation_status", "TEXT NOT NULL DEFAULT 'pending'"),
                                     ("reconciled_by", "INTEGER"), ("reconciled_at", "TEXT"),
-                                    ("reconciliation_note", "TEXT")):
+                                    ("reconciliation_note", "TEXT"), ("request_hash", "TEXT")):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE provisioning_jobs ADD COLUMN {column} {declaration}")
         db.execute("CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_status ON provisioning_jobs(status,created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_reconciliation ON provisioning_jobs(status,reconciliation_status,node_id)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_provisioning_jobs_idempotency ON provisioning_jobs(user_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute("INSERT INTO users(username,password_hash,role,vm_quota) VALUES('admin',?,'admin',-1)", (hash_password(admin_password),))
         db.commit()

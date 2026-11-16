@@ -91,6 +91,7 @@
 - [ ] Validate cloud-init on each explicitly supported Ubuntu Server ISO release
 - [ ] Add rollback/cleanup for partially completed VM provisioning
 - [x] Persist provisioning jobs and recover queued work after API restarts
+- [x] Per-user VM-create API idempotency keys with request-fingerprint conflict detection
 - [ ] Add provider idempotency keys, safe retries and full VM lifecycle reconciliation
 - [ ] Add encrypted backups and tested restore procedures
 - [ ] Complete threat modelling, dependency scanning, secret rotation, and external security review

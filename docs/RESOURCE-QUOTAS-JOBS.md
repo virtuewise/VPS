@@ -46,3 +46,15 @@ Failed VM-create jobs assigned to an enrolled node appear in the administrator d
 4. Both actions are administrator-only and audited. The endpoint rechecks node freshness and VM presence inside a serialized database transaction. Neither action sends a provider command.
 
 This first recovery workflow covers node-routed VM creation. Legacy single-agent jobs without an enrolled `node_id`, provider-side partial resource cleanup, VM start/stop/delete reconciliation, distributed worker leases and safe idempotent retries remain future work. If the assigned node is offline or cannot report a complete fresh inventory, recovery is blocked and the operator must restore node connectivity or investigate the provider directly.
+
+
+## VM-create idempotency
+
+`POST /api/vms` accepts an optional `Idempotency-Key` header. Keys must be 8-128 characters using letters, digits, `.`, `_`, `:` or `-`. Keys are unique per authenticated user. The control plane stores a SHA-256 fingerprint of the normalized request alongside the durable job:
+
+- Repeating the same key with the same request returns the original provisioning job instead of creating another VM or consuming quota twice.
+- Reusing a key with a different request returns HTTP 409.
+- The browser generates a UUID key and reuses it if the initial HTTP request fails before an acceptance response. Once the API accepts the job, the key is retired for the next deliberate submission.
+- After an ambiguous job is reconciled as absent, a new provisioning attempt must use a new key.
+
+This protects the control-plane API against client retries and lost responses. Provider-level idempotency keys and distributed worker leases are still outstanding; the control plane does not blindly retry provider operations.

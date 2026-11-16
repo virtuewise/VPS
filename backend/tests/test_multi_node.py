@@ -248,7 +248,7 @@ class MultiNodeTests(unittest.TestCase):
         other_context = {"id": customer2["id"], "username": "other-owner", "role": "user"}
         request = main.CreateVMRequest(name="tenant-vm", iso_path="/tmp/ubuntu.iso", memory_mb=1024,
                                        disk_gb=10, cpu_count=1, switch_name="tenant-net", node_id=node_id)
-        accepted = main.create_vm(request, customer_context)
+        accepted = main.create_vm(request, idempotency_key=None, user=customer_context)
         self.assertTrue(accepted["accepted"])
         with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
             ownership = db.execute("SELECT node_id,network_name FROM vm_ownership WHERE vm_name='tenant-vm'").fetchone()
@@ -263,7 +263,7 @@ class MultiNodeTests(unittest.TestCase):
         other_request = main.CreateVMRequest(name="other-tenant-vm", iso_path="/tmp/ubuntu.iso", memory_mb=1024,
                                              disk_gb=10, cpu_count=1, switch_name="tenant-net", node_id=node_id)
         with self.assertRaises(HTTPException) as blocked_other_customer:
-            main.create_vm(other_request, other_context)
+            main.create_vm(other_request, idempotency_key=None, user=other_context)
         self.assertEqual(blocked_other_customer.exception.status_code, 403)
         with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
             db.execute("DELETE FROM vm_ownership WHERE vm_name='tenant-vm'")
@@ -276,6 +276,36 @@ class MultiNodeTests(unittest.TestCase):
         with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
             remaining_assignments = db.execute("SELECT COUNT(*) FROM tenant_network_assignments WHERE user_id=?", (customer2["id"],)).fetchone()[0]
         self.assertEqual(remaining_assignments, 0)
+
+    def test_vm_provisioning_idempotency_returns_original_job_and_rejects_payload_reuse(self):
+        with TestClient(main.app) as client:
+            headers = self._login(client)
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "hyperv", "cpu_total": 8, "cpu_used": 0.1,
+                "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20,
+                "inventory": [], "switches": [],
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            payload = {"name": "idempotent-vm", "provider": "hyperv", "iso_path": "C:\\ISO\\ubuntu.iso",
+                       "memory_mb": 2048, "disk_gb": 30, "cpu_count": 2, "node_id": node_id}
+            request_headers = {**headers, "Idempotency-Key": "vps-create-000001"}
+            first = client.post("/api/vms", headers=request_headers, json=payload)
+            self.assertEqual(first.status_code, 202, first.text)
+            repeated = client.post("/api/vms", headers=request_headers, json=payload)
+            self.assertEqual(repeated.status_code, 202, repeated.text)
+            self.assertEqual(repeated.json()["provisioning_job_id"], first.json()["provisioning_job_id"])
+            self.assertTrue(repeated.json()["replayed"])
+            changed = {**payload, "memory_mb": 4096}
+            mismatch = client.post("/api/vms", headers=request_headers, json=changed)
+            self.assertEqual(mismatch.status_code, 409)
+            invalid = client.post("/api/vms", headers={**headers, "Idempotency-Key": "short"}, json=payload)
+            self.assertEqual(invalid.status_code, 422)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM provisioning_jobs WHERE idempotency_key='vps-create-000001'").fetchone()[0], 1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM vm_ownership WHERE vm_name='idempotent-vm'").fetchone()[0], 1)
 
     def test_operator_reconciliation_verifies_inventory_before_releasing_or_confirming_vm(self):
         with TestClient(main.app) as client:

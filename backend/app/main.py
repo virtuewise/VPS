@@ -704,12 +704,25 @@ async def get_monitor(user: dict[str, Any] = Depends(require_user)) -> dict[str,
 
 
 @app.post("/api/vms", tags=["instances"], status_code=202)
-def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
-    """Reserve customer quota and enqueue VM provisioning for the durable worker."""
+def create_vm(request: CreateVMRequest, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+              user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    """Reserve customer quota and enqueue VM provisioning with optional per-user idempotency."""
+    if idempotency_key is not None and not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", idempotency_key):
+        raise HTTPException(status_code=422, detail="Idempotency-Key must be 8-128 characters using letters, digits, dot, underscore, colon or hyphen.")
+    request_hash = hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     job_id = str(uuid.uuid4())
     with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
         connection.execute("PRAGMA busy_timeout=15000")
         connection.execute("BEGIN IMMEDIATE")
+        if idempotency_key is not None:
+            previous = connection.execute("SELECT id,status,request_hash FROM provisioning_jobs WHERE user_id=? AND idempotency_key=?",
+                                          (user["id"], idempotency_key)).fetchone()
+            if previous:
+                connection.rollback()
+                if previous[2] != request_hash:
+                    raise HTTPException(status_code=409, detail="This Idempotency-Key was already used with a different VM request. Use a new key for a new request.")
+                return {"accepted": True, "provisioning_job_id": previous[0], "status": previous[1],
+                        "replayed": True, "message": "This request was already accepted; returning its original provisioning job."}
         if connection.execute("SELECT 1 FROM vm_ownership WHERE vm_name=?", (request.name,)).fetchone():
             connection.rollback()
             raise HTTPException(status_code=409, detail="A VM with this name is already recorded.")
@@ -761,7 +774,8 @@ def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_u
             raise HTTPException(status_code=503, detail="No node is enrolled and no legacy VPS_AGENT_URL/VPS_AGENT_TOKEN is configured.")
         connection.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb,node_id,network_name) VALUES(?,?,?,?,?,?,?)",
                            (request.name, user["id"], request.cpu_count, request.memory_mb, request.disk_gb, request.node_id, request.switch_name))
-        connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json) VALUES(?,?,?,'queued',?)", (job_id, user["id"], request.name, json.dumps(request.model_dump())))
+        connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json,idempotency_key,request_hash) VALUES(?,?,?,'queued',?,?,?)",
+                           (job_id, user["id"], request.name, json.dumps(request.model_dump()), idempotency_key, request_hash if idempotency_key is not None else None))
         connection.commit()
     audit(DATABASE_PATH, user, "vm.provisioning_queued", request.name, f"job_id={job_id}")
     return {"accepted": True, "provisioning_job_id": job_id, "status": "queued", "message": "VM provisioning has been queued. Poll the job status endpoint for progress."}

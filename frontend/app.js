@@ -1,6 +1,7 @@
 const byId = id => document.getElementById(id);
 let csrfToken = "";
 let currentUser = null;
+let createIdempotencyKey = null;
 const notice = message => { byId("notice").textContent = message; };
 
 async function api(path, options = {}) {
@@ -157,6 +158,7 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   try{const queued=await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});byId("create-vm-status").textContent=`Queued (${queued.provisioning_job_id}).`;await waitForProvisioning(queued.provisioning_job_id);notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
   catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);if(error.message.includes("Job ID:"))notice(`${error.message} You can safely refresh; the job continues on the server.`);}
 });
+byId("create-vm-form").addEventListener("input",()=>{if(!byId("create-vm-button").disabled)createIdempotencyKey=null;});
 byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
 byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });
 byId('network-form').addEventListener('submit', async event => {
