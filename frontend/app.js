@@ -122,8 +122,9 @@ byId("login-form").addEventListener("submit", async event => {
   button.disabled = true;
   byId("login-error").textContent = "";
   try {
+    const username = byId("admin-username").value.trim();
     const password = byId("admin-password").value;
-    const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
     csrfToken = result.csrf_token;
     byId("admin-password").value = "";
     byId("login-gate").hidden = true;
