@@ -92,12 +92,13 @@ def start_vm(request: VMNameRequest) -> dict[str, Any]:
 
 @app.post("/v1/vms/stop", dependencies=[Depends(require_token)])
 def stop_vm(request: VMNameRequest) -> dict[str, Any]:
-    return {"status": "stopped", "vm": hyperv.vm_action("stop", request.name)}
+    return {"status": "stop-requested", "vm": hyperv.vm_action("stop", request.name)}
 
 
 @app.post("/v1/vms/{name}/console", dependencies=[Depends(require_token)])
 def open_console(name: str) -> dict[str, Any]:
-    return {"status": "opened", "console": hyperv.vm_action("console", name)}
+    result = hyperv.vm_action("console", name)
+    return {"status": "opened" if result.get("opened", True) else "instructions", "console": result}
 
 
 @app.delete("/v1/vms/{name}", dependencies=[Depends(require_token)])
