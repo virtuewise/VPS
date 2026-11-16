@@ -137,15 +137,15 @@ def auth_session(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/auth/login", tags=["authentication"])
-def auth_login(request: LoginRequest, response: Response) -> dict[str, Any]:
-    username_key = request.username.strip().lower()
-    client_ip = request.client.host if request.client else "unknown"
+def auth_login(credentials: LoginRequest, response: Response, http_request: Request) -> dict[str, Any]:
+    username_key = credentials.username.strip().lower()
+    client_ip = http_request.client.host if http_request.client else "unknown"
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         attempts = connection.execute("SELECT COUNT(*) FROM login_attempts WHERE username_key=? AND client_ip=? AND attempted_at >= datetime('now','-15 minutes')", (username_key, client_ip)).fetchone()[0]
         if attempts >= 5:
             raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.")
-        row = connection.execute("SELECT id,username,password_hash,role,active FROM users WHERE username=? COLLATE NOCASE", (request.username,)).fetchone()
-        if not row or not row[4] or not verify_password(request.password, row[2]):
+        row = connection.execute("SELECT id,username,password_hash,role,active FROM users WHERE username=? COLLATE NOCASE", (credentials.username,)).fetchone()
+        if not row or not row[4] or not verify_password(credentials.password, row[2]):
             connection.execute("INSERT INTO login_attempts(username_key,client_ip) VALUES(?,?)", (username_key, client_ip))
             connection.commit()
             raise HTTPException(status_code=401, detail="Invalid username or password.")
