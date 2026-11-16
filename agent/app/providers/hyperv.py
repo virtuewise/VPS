@@ -38,19 +38,27 @@ switch ($env:VPS_HYPERV_ACTION) {
     if (Get-VM -Name $name -ErrorAction SilentlyContinue) { throw 'A VM with this name already exists.' }
     $switch = [string]$payload.switch_name
     if ($switch -and -not (Get-VMSwitch -Name $switch -ErrorAction SilentlyContinue)) { throw 'The requested virtual switch does not exist.' }
-    $params = @{
-      Name = $name; Generation = 2
-      MemoryStartupBytes = ([int64]$payload.memory_mb * 1MB)
-      NewVHDPath = [string]$payload.vhd_path
-      NewVHDSizeBytes = ([int64]$payload.disk_gb * 1GB)
+    try {
+      $params = @{
+        Name = $name; Generation = 2
+        MemoryStartupBytes = ([int64]$payload.memory_mb * 1MB)
+        NewVHDPath = [string]$payload.vhd_path
+        NewVHDSizeBytes = ([int64]$payload.disk_gb * 1GB)
+      }
+      if ($switch) { $params.SwitchName = $switch }
+      New-VM @params | Out-Null
+      Set-VMProcessor -VMName $name -Count ([int]$payload.cpu_count)
+      Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority
+      Add-VMDvdDrive -VMName $name -Path ([string]$payload.iso_path) | Out-Null
+      if ($payload.seed_iso_path) { Add-VMDvdDrive -VMName $name -Path ([string]$payload.seed_iso_path) | Out-Null }
+      $result = Get-VM -Name $name | Select-Object Name, State, Id
+    } catch {
+      $partial = Get-VM -Name $name -ErrorAction SilentlyContinue
+      if ($partial) { Remove-VM -VM $partial -Force -ErrorAction SilentlyContinue }
+      $partialDisk = [string]$payload.vhd_path
+      if ($partialDisk -and (Test-Path -LiteralPath $partialDisk)) { Remove-Item -LiteralPath $partialDisk -Force -ErrorAction SilentlyContinue }
+      throw
     }
-    if ($switch) { $params.SwitchName = $switch }
-    New-VM @params | Out-Null
-    Set-VMProcessor -VMName $name -Count ([int]$payload.cpu_count)
-    Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority
-    Add-VMDvdDrive -VMName $name -Path ([string]$payload.iso_path) | Out-Null
-    if ($payload.seed_iso_path) { Add-VMDvdDrive -VMName $name -Path ([string]$payload.seed_iso_path) | Out-Null }
-    $result = Get-VM -Name $name | Select-Object Name, State, Id
   }
   'start' {
     Start-VM -Name ([string]$payload.name) | Out-Null
@@ -81,6 +89,10 @@ switch ($env:VPS_HYPERV_ACTION) {
     if ([bool]$payload.delete_disks) {
       foreach ($disk in $managed) { if (Test-Path -LiteralPath $disk) { Remove-Item -LiteralPath $disk -Force } }
     }
+    $seedIso = Join-Path $env:VPS_HYPERV_VM_ROOT "$name-seed.iso"
+    $seedDir = Join-Path (Join-Path $env:VPS_HYPERV_VM_ROOT $name) 'cloud-init'
+    if (Test-Path -LiteralPath $seedIso) { Remove-Item -LiteralPath $seedIso -Force }
+    if (Test-Path -LiteralPath $seedDir) { Remove-Item -LiteralPath $seedDir -Recurse -Force }
     $result = @{ deleted = $true; name = $name; disks_deleted = [bool]$payload.delete_disks; retained_disk_paths = @($managed | Where-Object { Test-Path -LiteralPath $_ }) }
   }
   'switches' { $result = @(Get-VMSwitch | Select-Object Name, SwitchType) }
