@@ -19,7 +19,7 @@ AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
 if len(AGENT_TOKEN) < 32:
     raise RuntimeError("Set VPS_AGENT_TOKEN to a random secret of at least 32 characters.")
 
-app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.2.0", docs_url=None, redoc_url=None)
+app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.3.0", docs_url=None, redoc_url=None)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
