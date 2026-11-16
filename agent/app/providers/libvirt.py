@@ -222,7 +222,6 @@ def vm_action(action: str, name: str, *, delete_disks: bool = False) -> Any:
             return {"name": name, "state": "shut off"}
         _run([VIRSH, "shutdown", name])
         return {"name": name, "state": "shutdown-requested"}
-        return {"name": name, "state": "shutdown-requested"}
     if action == "console":
         _run([VIRSH, "domstate", name])
         return {"opened": False, "name": name, "command": f"virsh console {name}",
