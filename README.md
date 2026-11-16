@@ -67,3 +67,7 @@ The software is intended to be free and open source. Running real VPS instances 
 ## License
 
 MIT. See LICENSE.
+
+## Virtualization providers
+
+An experimental Linux KVM/libvirt provider is available alongside Windows Hyper-V. See [Linux KVM setup](docs/LINUX-KVM-LIBVIRT.md). It has automated unit tests but has not yet passed real-host acceptance testing.
