@@ -49,11 +49,25 @@ class AccountApiTests(unittest.TestCase):
         enrolled = self.client.post("/api/nodes/enroll", json={"token": token})
         self.assertEqual(enrolled.status_code, 200, enrolled.text)
         self.assertTrue(enrolled.json()["registered"])
+        node_id = enrolled.json()["node"]["id"]
+        node_token = enrolled.json()["node_token"]
+        heartbeat = self.client.post(f"/api/nodes/{node_id}/heartbeat",
+            headers={"Authorization": f"Bearer {node_token}"},
+            json={"provider": "libvirt", "cpu_total": 8, "memory_total_mb": 16384})
+        self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+        self.assertTrue(heartbeat.json()["accepted"])
         replay = self.client.post("/api/nodes/enroll", json={"token": token})
         self.assertEqual(replay.status_code, 401)
         nodes = self.client.get("/api/nodes")
         self.assertEqual(nodes.status_code, 200)
-        self.assertTrue(any(item["name"] == "edge-one" for item in nodes.json()["items"]))
+        self.assertTrue(any(item["name"] == "edge-one" and item["status"] == "online" for item in nodes.json()["items"]))
+        admin_login = self.client.post("/api/auth/login", json={"username": "admin", "password": os.environ["VPS_ADMIN_PASSWORD"]})
+        admin_headers = {"X-CSRF-Token": admin_login.json()["csrf_token"]}
+        revoked = self.client.post(f"/api/nodes/{node_id}/revoke", headers=admin_headers)
+        self.assertEqual(revoked.status_code, 200)
+        denied = self.client.post(f"/api/nodes/{node_id}/heartbeat",
+            headers={"Authorization": f"Bearer {node_token}"}, json={"provider": "libvirt"})
+        self.assertEqual(denied.status_code, 401)
 
     def test_cloud_init_schema_accepts_valid_sha512_hash_and_ssh_key(self):
         request = CloudInitRequest.model_validate({
