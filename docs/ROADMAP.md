@@ -35,7 +35,8 @@
 
 ## Milestone 3 — Linux provider and secure node enrollment
 
-- [ ] libvirt/KVM provider with a provider-neutral node contract and conformance tests
+- [x] Experimental libvirt/KVM provider prototype behind the shared node-agent API
+- [ ] Real-host libvirt acceptance tests and provider conformance suite
 - [ ] One-time node enrollment tokens and key rotation
 - [ ] Mutual TLS between control plane and agents
 - [ ] Job queue for long-running VM operations
