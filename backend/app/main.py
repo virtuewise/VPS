@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from .tenancy import audit, hash_password, initialize_tenancy, verify_password
 
 APP_ROOT = Path(os.getenv("VPS_APP_ROOT", str(Path(__file__).resolve().parents[2])))
 FRONTEND_DIR = APP_ROOT / "frontend"
@@ -44,6 +45,7 @@ def initialize_database() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, hostname TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         connection.commit()
+    initialize_tenancy(DATABASE_PATH, ADMIN_PASSWORD)
 
 
 @app.on_event("startup")
@@ -70,24 +72,39 @@ def _read_session(request: Request) -> dict[str, Any] | None:
         if not hmac.compare_digest(signature, _session_signature(payload)):
             return None
         session = json.loads(_unb64(payload))
-        if int(session["expires"]) < int(time.time()) or not isinstance(session["csrf"], str):
-            return None
+        if int(session["expires"]) < int(time.time()) or not isinstance(session["csrf"], str): return None
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            row = connection.execute("SELECT id,username,role,active FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        if not row or not row[3]: return None
+        session.update({"id": row[0], "username": row[1], "role": row[2]})
         return session
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return None
 
 
-def require_admin(request: Request, x_csrf_token: str | None = Header(default=None)) -> None:
+def require_user(request: Request, x_csrf_token: str | None = Header(default=None)) -> dict[str, Any]:
     session = _read_session(request)
-    if not session:
-        raise HTTPException(status_code=401, detail="Administrator login required.")
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
-        if not x_csrf_token or not hmac.compare_digest(x_csrf_token, session["csrf"]):
-            raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
+    if not session: raise HTTPException(status_code=401, detail="Sign in required.")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and (not x_csrf_token or not hmac.compare_digest(x_csrf_token, session["csrf"])):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
+    return session
+
+
+def require_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if user["role"] != "admin": raise HTTPException(status_code=403, detail="Administrator role required.")
+    return user
 
 
 class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=1024)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+    password: str = Field(min_length=16, max_length=1024)
+    role: str = Field(default="user", pattern=r"^(admin|user)$")
+    vm_quota: int = Field(default=3, ge=0, le=1000)
 
 
 class CreateVMRequest(BaseModel):
@@ -110,28 +127,60 @@ def auth_session(request: Request) -> dict[str, Any]:
     session = _read_session(request)
     if not session:
         return {"authenticated": False}
-    return {"authenticated": True, "csrf_token": session["csrf"], "expires_at": session["expires"]}
+    return {"authenticated": True, "csrf_token": session["csrf"], "expires_at": session["expires"], "user": {"id": session["id"], "username": session["username"], "role": session["role"]}}
 
 
 @app.post("/api/auth/login", tags=["authentication"])
 def auth_login(request: LoginRequest, response: Response) -> dict[str, Any]:
-    if not hmac.compare_digest(request.password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")):
-        raise HTTPException(status_code=401, detail="Incorrect administrator password.")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute("SELECT id,username,password_hash,role,active FROM users WHERE username=? COLLATE NOCASE", (request.username,)).fetchone()
+    if not row or not row[4] or not verify_password(request.password, row[2]): raise HTTPException(status_code=401, detail="Invalid username or password.")
     csrf = secrets.token_urlsafe(32)
     expires = int(time.time()) + SESSION_TTL_SECONDS
-    payload = _b64(json.dumps({"expires": expires, "csrf": csrf}, separators=(",", ":")).encode("utf-8"))
+    payload = _b64(json.dumps({"user_id": row[0], "expires": expires, "csrf": csrf}, separators=(",", ":")).encode("utf-8"))
     response.set_cookie(
         SESSION_COOKIE, f"{payload}.{_session_signature(payload)}",
         max_age=SESSION_TTL_SECONDS, httponly=True, secure=SESSION_COOKIE_SECURE,
         samesite="strict", path="/",
     )
-    return {"authenticated": True, "csrf_token": csrf, "expires_at": expires}
+    actor = {"id": row[0], "username": row[1]}
+    audit(DATABASE_PATH, actor, "auth.login", row[1])
+    return {"authenticated": True, "csrf_token": csrf, "expires_at": expires, "user": {"id": row[0], "username": row[1], "role": row[3]}}
 
 
-@app.post("/api/auth/logout", tags=["authentication"], dependencies=[Depends(require_admin)])
-def auth_logout(response: Response) -> dict[str, bool]:
+@app.post("/api/auth/logout", tags=["authentication"])
+def auth_logout(response: Response, user: dict[str, Any] = Depends(require_user)) -> dict[str, bool]:
+    audit(DATABASE_PATH, user, "auth.logout", user["username"])
     response.delete_cookie(SESSION_COOKIE, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite="strict")
     return {"success": True}
+
+
+@app.get("/api/users", tags=["users"])
+def list_users(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT id,username,role,vm_quota,active,created_at FROM users ORDER BY id").fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@app.post("/api/users", tags=["users"])
+def create_user(request: UserCreateRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            cursor = connection.execute("INSERT INTO users(username,password_hash,role,vm_quota) VALUES(?,?,?,?)", (request.username, hash_password(request.password), request.role, request.vm_quota))
+            connection.commit()
+    except sqlite3.IntegrityError: raise HTTPException(status_code=409, detail="Username already exists.") from None
+    audit(DATABASE_PATH, admin, "user.create", request.username, f"role={request.role}; quota={request.vm_quota}")
+    return {"id": cursor.lastrowid, "username": request.username, "role": request.role, "vm_quota": request.vm_quota}
+
+
+@app.get("/api/audit", tags=["administration"])
+def get_audit_log(limit: int = 100, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    limit = max(1, min(limit, 500))
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT id,actor_username,action,target,details,created_at FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return {"items": [dict(row) for row in rows]}
 
 
 def agent_configured() -> bool:
