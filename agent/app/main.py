@@ -8,13 +8,18 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from app.providers import hyperv
+from app.providers import hyperv as hyperv_provider, libvirt
+
+PROVIDER_NAME = os.getenv("VPS_PROVIDER", "hyperv").strip().lower()
+if PROVIDER_NAME not in {"hyperv", "libvirt"}:
+    raise RuntimeError("VPS_PROVIDER must be either hyperv or libvirt.")
+hyperv = libvirt if PROVIDER_NAME == "libvirt" else hyperv_provider
 
 AGENT_TOKEN = os.getenv("VPS_AGENT_TOKEN", "")
 if len(AGENT_TOKEN) < 32:
     raise RuntimeError("Set VPS_AGENT_TOKEN to a random secret of at least 32 characters.")
 
-app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Windows Hyper-V node.", version="0.2.0", docs_url=None, redoc_url=None)
+app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.2.0", docs_url=None, redoc_url=None)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -56,7 +61,7 @@ class DeleteVMRequest(VMNameRequest):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "version": "0.2.0"}
+    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "version": "0.3.0"}
 
 
 @app.get("/v1/vms", dependencies=[Depends(require_token)])
