@@ -53,8 +53,7 @@ class LibvirtProviderTests(unittest.TestCase):
             root = Path(temp)
             iso = root / "ubuntu.iso"
             iso.write_bytes(b"iso")
-            with patch.object(libvirt, "VM_ROOT", root / "vms"), \\
-                 patch.object(libvirt, "_run", return_value="future-vm") as run:
+            with patch.object(libvirt, "VM_ROOT", root / "vms"), patch.object(libvirt, "_run", return_value="future-vm") as run:
                 with self.assertRaises(HTTPException) as caught:
                     libvirt.create_vm(name="future-vm", memory_mb=2048, disk_gb=20,
                         cpu_count=2, iso_path=str(iso), switch_name=None)
