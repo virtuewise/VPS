@@ -56,7 +56,8 @@ async function loadMonitor() {
   } catch(error) { target.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 async function loadAdminPanel() {
-  if (!currentUser || currentUser.role !== 'admin') { byId('administration').hidden = true; return; }
+  if (!currentUser || currentUser.role !== 'admin') { byId('administration').hidden = true; byId('admin-nav').hidden = true; return; }
+  byId('admin-nav').hidden = false;
   byId('administration').hidden = false;
   const result = await api('/api/users');
   const select = byId('transfer-user-select'); select.replaceChildren();
@@ -159,6 +160,7 @@ byId("logout-button").addEventListener("click", async () => {
   csrfToken = "";
   currentUser = null;
   byId("administration").hidden = true;
+  byId("admin-nav").hidden = true;
   byId("login-gate").hidden = false;
   byId("admin-password").focus();
   byId("api-status").textContent = "Signed out";
