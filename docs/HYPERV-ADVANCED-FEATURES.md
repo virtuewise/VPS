@@ -34,4 +34,6 @@ The monitor reports a point-in-time sample of host CPU utilization, physical mem
 
 ## Security boundary
 
-Keep both the control plane and agent bound to loopback. Console launch is a privileged host-side action. This milestone still has no user authentication, tenant isolation, per-user authorization, audit log, secure node enrollment, or multi-node job queue. Do not expose it to the LAN or internet.
+The control plane now has local username/password accounts, administrator and customer roles, signed expiring sessions, CSRF protection, login throttling, VM ownership checks, VM-count quotas, and administrative audit events. These are useful development controls, not a completed production security review. The node agent still uses a shared bearer token and has no one-time enrollment, mutual TLS, rotation workflow, or multi-node job queue.
+
+Keep both the control plane and agent bound to loopback while developing. Do not expose the agent or an unaudited control plane to the LAN or internet. Console launch is a privileged host-side action. Back up the SQLite database and VM disks before upgrades or destructive operations.
