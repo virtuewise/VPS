@@ -84,16 +84,33 @@ def list_vms() -> list[dict[str, Any]]:
             if line.strip():
                 state = line.strip().capitalize()
                 break
+        info = _run([VIRSH, "dominfo", name])
+        details = {}
+        for line in info.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                details[key.strip().lower()] = value.strip()
+        memory_kib = re.sub(r"[^0-9]", "", details.get("max memory", "0")) or "0"
         networks = []
         try:
             rows = _run([VIRSH, "domiflist", name]).splitlines()[2:]
+            addresses = {}
+            try:
+                for row in _run([VIRSH, "domifaddr", name, "--source", "agent", "--full"]).splitlines()[2:]:
+                    cols = row.split()
+                    if len(cols) >= 5:
+                        addresses.setdefault(cols[1].lower(), []).append(cols[4].split("/")[0])
+            except HTTPException:
+                pass
             for row in rows:
                 cols = row.split()
                 if len(cols) >= 5:
-                    networks.append({"switch_name": cols[2], "mac_address": cols[4], "ip_addresses": []})
+                    networks.append({"switch_name": cols[2], "mac_address": cols[4],
+                                     "ip_addresses": addresses.get(cols[4].lower(), [])})
         except HTTPException:
             pass
-        items.append({"name": name, "state": state, "cpu_usage": None, "memory_assigned_mb": 0,
+        items.append({"name": name, "state": state, "cpu_usage": None,
+                      "memory_assigned_mb": int(memory_kib) // 1024,
                       "uptime": None, "id": name, "network": networks})
     return items
 
@@ -113,6 +130,7 @@ def host_monitor() -> dict[str, Any]:
             for line in handle:
                 key, value = line.split(":", 1)
                 mem[key] = int(value.strip().split()[0])
+        VM_ROOT.mkdir(parents=True, exist_ok=True)
         usage = shutil.disk_usage(VM_ROOT)
     except (OSError, ValueError, IndexError) as exc:
         raise HTTPException(status_code=503, detail="Could not sample Linux host resources.") from exc
