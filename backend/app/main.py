@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .tenancy import audit, hash_password, initialize_tenancy, verify_password
+from .scheduler import choose_node
 
 APP_ROOT = Path(os.getenv("VPS_APP_ROOT", str(Path(__file__).resolve().parents[2])))
 FRONTEND_DIR = APP_ROOT / "frontend"
@@ -137,6 +138,13 @@ class NodeEnrollmentRequest(BaseModel):
 
 class NodeEnrollRequest(BaseModel):
     token: str = Field(min_length=32, max_length=128)
+
+
+class PlacementRequest(BaseModel):
+    cpu_count: int = Field(ge=1, le=256)
+    memory_mb: int = Field(ge=512, le=1048576)
+    disk_gb: int = Field(ge=1, le=100000)
+    provider: str | None = Field(default=None, max_length=32)
 
 
 class CreateVMRequest(BaseModel):
@@ -399,6 +407,24 @@ def list_nodes() -> dict[str, list[dict[str, Any]]]:
         item["resources"] = json.loads(item.pop("resources_json") or "{}")
         items.append(item)
     return {"items": items}
+
+
+@app.post("/api/scheduler/placement", tags=["scheduler"])
+def preview_node_placement(request: PlacementRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Preview eligible node placement; does not provision or reserve capacity."""
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT id,name,hostname,status,last_seen,resources_json FROM nodes WHERE status!='revoked'").fetchall()
+    nodes = []
+    for row in rows:
+        item = dict(row)
+        item["resources"] = json.loads(item.pop("resources_json") or "{}")
+        nodes.append(item)
+    selected = choose_node(nodes, cpu_count=request.cpu_count, memory_mb=request.memory_mb,
+                           disk_gb=request.disk_gb, now=int(time.time()), provider=request.provider)
+    if selected is None:
+        raise HTTPException(status_code=409, detail="No fresh, online node has sufficient reported capacity.")
+    return {"placement": selected, "reserved": False, "note": "Preview only; provisioning is not yet routed to multi-node agents."}
 
 
 @app.post("/api/nodes/enrollment-tokens", tags=["nodes"])
