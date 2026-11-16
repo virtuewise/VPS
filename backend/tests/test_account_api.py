@@ -1,5 +1,6 @@
 import os
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,34 @@ class AccountApiTests(unittest.TestCase):
         cls.client.__exit__(None, None, None)
         TEST_DB.unlink(missing_ok=True)
 
+
+    def test_node_enrollment_tokens_are_hashed_single_use_and_expire(self):
+        login = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": os.environ["VPS_ADMIN_PASSWORD"]
+        })
+        self.assertEqual(login.status_code, 200)
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        issued = self.client.post("/api/nodes/enrollment-tokens", headers=headers, json={
+            "name": "edge-one", "hostname": "edge-one.example.test"
+        })
+        self.assertEqual(issued.status_code, 200, issued.text)
+        token = issued.json()["token"]
+        self.assertEqual(issued.json()["expires_in_seconds"], 900)
+
+        import hashlib
+        with sqlite3.connect(TEST_DB) as db:
+            stored = db.execute("SELECT token_hash FROM node_enrollment_tokens").fetchone()[0]
+        self.assertNotEqual(stored, token)
+        self.assertEqual(stored, hashlib.sha256(token.encode()).hexdigest())
+
+        enrolled = self.client.post("/api/nodes/enroll", json={"token": token})
+        self.assertEqual(enrolled.status_code, 200, enrolled.text)
+        self.assertTrue(enrolled.json()["registered"])
+        replay = self.client.post("/api/nodes/enroll", json={"token": token})
+        self.assertEqual(replay.status_code, 401)
+        nodes = self.client.get("/api/nodes")
+        self.assertEqual(nodes.status_code, 200)
+        self.assertTrue(any(item["name"] == "edge-one" for item in nodes.json()["items"]))
 
     def test_cloud_init_schema_accepts_valid_sha512_hash_and_ssh_key(self):
         request = CloudInitRequest.model_validate({
