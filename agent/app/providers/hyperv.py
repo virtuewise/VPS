@@ -164,8 +164,8 @@ def _validate_name(name: str) -> None:
 def _make_cloud_init_seed(name: str, username: str, password_hash: str, ssh_public_key: str) -> Path:
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", username):
         raise HTTPException(status_code=422, detail="Linux username must be lowercase and start with a letter or underscore.")
-    if not password_hash.startswith("$6$") or len(password_hash) < 30 or any(c in password_hash for c in "\r\n"):
-        raise HTTPException(status_code=422, detail="Provide a SHA-512 crypt password hash (starts with $6$); plain-text passwords are not accepted.")
+    if re.fullmatch(r"\$6\$(?:rounds=[0-9]+\$)?[A-Za-z0-9./]{1,16}\$[A-Za-z0-9./]{86}", password_hash) is None:
+        raise HTTPException(status_code=422, detail="Provide a valid SHA-512 crypt password hash; plain-text passwords are not accepted.")
     key = ssh_public_key.strip()
     if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]{0,100})?|ssh-rsa [A-Za-z0-9+/=]+(?: [^\r\n]{0,100})?", key):
         raise HTTPException(status_code=422, detail="Provide one valid ssh-ed25519 or ssh-rsa public key.")
