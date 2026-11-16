@@ -23,6 +23,16 @@ function setCreateEnabled(enabled) {
   byId("create-vm-button").disabled = !enabled;
   byId("create-vm-status").textContent = enabled ? "Agent connected. Review settings before provisioning." : "Connect the local agent to enable provisioning.";
 }
+async function waitForProvisioning(jobId) {
+  for (let attempt = 0; attempt < 180; attempt++) {
+    const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    byId("create-vm-status").textContent = `Provisioning ${job.vm_name}: ${job.status} (attempt ${job.attempts})`;
+    if (job.status === "succeeded") return job;
+    if (job.status === "failed") throw new Error(job.error || "Provisioning failed. Check job details before retrying.");
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error(`Provisioning is still running. Job ID: ${jobId}`);
+}
 async function loadSwitches() {
   const select = byId("switch-select"), selected = select.value, result = await api("/api/switches");
   select.replaceChildren(new Option("No switch (disconnected)", ""));
@@ -90,8 +100,8 @@ byId("create-vm-form").addEventListener("submit",async event=>{
   const summary=`${payload.name}: ${payload.cpu_count} vCPU, ${payload.memory_mb} MB RAM, ${payload.disk_gb} GB disk`;
   if(!confirm(`Create this VM?\n\n${summary}\nCloud-init: ${supplied===3?"enabled":"not enabled"}\n\nIt will be created powered off.`))return;
   const button=byId("create-vm-button");button.disabled=true;byId("create-vm-status").textContent="Creating VM…";notice("");
-  try{await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
-  catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);}
+  try{const queued=await api("/api/vms",{method:"POST",body:JSON.stringify(payload)});byId("create-vm-status").textContent=`Queued (${queued.provisioning_job_id}).`;await waitForProvisioning(queued.provisioning_job_id);notice(`VM ${payload.name} created powered off.`);form.reset();form.elements.memory_mb.value="2048";form.elements.disk_gb.value="20";form.elements.cpu_count.value="2";await loadDashboard();}
+  catch(error){byId("create-vm-status").textContent="Creation failed.";notice(error.message);setCreateEnabled(true);if(error.message.includes("Job ID:"))notice(`${error.message} You can safely refresh; the job continues on the server.`);}
 });
 byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
 byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });

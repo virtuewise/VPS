@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -33,7 +34,8 @@ SESSION_SECRET = os.getenv("VPS_SESSION_SECRET", "")
 SESSION_COOKIE_SECURE = os.getenv("VPS_SESSION_COOKIE_SECURE", "false").lower() == "true"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 SESSION_COOKIE = "vwps_session"
-app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.4.0")
+app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.5.0")
+_worker_task: asyncio.Task | None = None
 
 
 def initialize_database() -> None:
@@ -62,8 +64,78 @@ def initialize_database() -> None:
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
+    global _worker_task
     initialize_database()
+    # A process may have died after dispatching a request to the agent. Do not
+    # blindly replay those jobs: the VM may already exist on the provider.
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute(
+            "UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE status='running'",
+            ("Worker stopped while this job was running. Provider outcome is unknown; reconcile the VM on the node before retrying.",),
+        )
+        connection.commit()
+    _worker_task = asyncio.create_task(provisioning_worker())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global _worker_task
+    if _worker_task:
+        _worker_task.cancel()
+        try:
+            await _worker_task
+        except asyncio.CancelledError:
+            pass
+        _worker_task = None
+
+
+async def provisioning_worker() -> None:
+    """Single-process durable queue consumer; queued jobs survive API restarts."""
+    while True:
+        job = None
+        with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+            connection.execute("PRAGMA busy_timeout=15000")
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id,request_json FROM provisioning_jobs WHERE status='queued' ORDER BY created_at,id LIMIT 1"
+            ).fetchone()
+            if row:
+                cursor = connection.execute(
+                    "UPDATE provisioning_jobs SET status='running',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'",
+                    (row[0],),
+                )
+                if cursor.rowcount == 1:
+                    job = (row[0], json.loads(row[1]))
+            connection.commit()
+        if job is None:
+            await asyncio.sleep(1)
+            continue
+        job_id, payload = job
+        try:
+            result = await agent_request("POST", "/v1/vms", payload)
+        except asyncio.CancelledError:
+            # Leave running state for startup reconciliation; never assume the
+            # provider did not complete an in-flight request.
+            raise
+        except Exception as exc:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute(
+                    "UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
+                    (f"{type(exc).__name__}: {str(exc)[:900]}", job_id),
+                )
+                connection.commit()
+        else:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute(
+                    "UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
+                    (json.dumps(result, default=str)[:20000], job_id),
+                )
+                connection.commit()
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                owner = connection.execute("SELECT j.user_id,j.vm_name,u.username FROM provisioning_jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", (job_id,)).fetchone()
+            if owner:
+                audit(DATABASE_PATH, {"id": owner[0], "username": owner[2]}, "vm.create", owner[1], f"job_id={job_id}")
 
 
 def _b64(value: bytes) -> str:
@@ -166,7 +238,7 @@ class CreateVMRequest(BaseModel):
 
 @app.get("/api/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.4.0"}
+    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.5.0"}
 
 
 @app.get("/api/auth/session", tags=["authentication"])
@@ -348,8 +420,10 @@ async def get_monitor() -> dict[str, Any]:
     return await agent_request("GET", "/v1/monitor")
 
 
-@app.post("/api/vms", tags=["instances"])
-async def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+@app.post("/api/vms", tags=["instances"], status_code=202)
+def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    """Reserve customer quota and enqueue VM provisioning for the durable worker."""
+    job_id = str(uuid.uuid4())
     with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
         connection.execute("PRAGMA busy_timeout=15000")
         connection.execute("BEGIN IMMEDIATE")
@@ -359,31 +433,23 @@ async def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(req
         if user["role"] != "admin":
             limits = connection.execute("SELECT vm_quota,cpu_quota_cores,memory_quota_mb,storage_quota_gb FROM users WHERE id=? AND active=1", (user["id"],)).fetchone()
             if not limits:
-                connection.rollback(); raise HTTPException(status_code=403, detail="Account is inactive.")
+                connection.rollback()
+                raise HTTPException(status_code=403, detail="Account is inactive.")
             used = connection.execute("SELECT COUNT(*),COALESCE(SUM(cpu_count),0),COALESCE(SUM(memory_mb),0),COALESCE(SUM(disk_gb),0) FROM vm_ownership WHERE user_id=?", (user["id"],)).fetchone()
             requested = (1, request.cpu_count, request.memory_mb, request.disk_gb)
             labels = ("VM", "CPU core", "MB memory", "GB storage")
             for limit, current, amount, label in zip(limits, used, requested, labels):
                 if limit >= 0 and current + amount > limit:
-                    connection.rollback(); raise HTTPException(status_code=403, detail=f"Your {label} quota would be exceeded.")
-        job_id = str(uuid.uuid4())
+                    connection.rollback()
+                    raise HTTPException(status_code=403, detail=f"Your {label} quota would be exceeded.")
+        if not agent_configured():
+            connection.rollback()
+            raise HTTPException(status_code=503, detail="Node agent is not configured. Set VPS_AGENT_URL and VPS_AGENT_TOKEN.")
         connection.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb) VALUES(?,?,?,?,?)", (request.name, user["id"], request.cpu_count, request.memory_mb, request.disk_gb))
-        connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json,attempts) VALUES(?,?,?,'running',?,1)", (job_id, user["id"], request.name, json.dumps(request.model_dump())))
+        connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json) VALUES(?,?,?,'queued',?)", (job_id, user["id"], request.name, json.dumps(request.model_dump())))
         connection.commit()
-    try:
-        result = await agent_request("POST", "/v1/vms", request.model_dump())
-    except Exception as exc:
-        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-            connection.execute("DELETE FROM vm_ownership WHERE vm_name=? AND user_id=?", (request.name, user["id"]))
-            connection.execute("UPDATE provisioning_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc)[:1000], job_id))
-            connection.commit()
-        raise
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-        connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(result, default=str)[:20000], job_id))
-        connection.commit()
-    audit(DATABASE_PATH, user, "vm.create", request.name, f"job_id={job_id}")
-    return {**result, "provisioning_job_id": job_id}
-
+    audit(DATABASE_PATH, user, "vm.provisioning_queued", request.name, f"job_id={job_id}")
+    return {"accepted": True, "provisioning_job_id": job_id, "status": "queued", "message": "VM provisioning has been queued. Poll the job status endpoint for progress."}
 
 
 @app.get("/api/jobs/{job_id}", tags=["jobs"])

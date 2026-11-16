@@ -1,13 +1,13 @@
-# VirtueWise VPS roadmap
+﻿# VirtueWise VPS roadmap
 
-## Milestone 1 — Control-plane foundation
+## Milestone 1 â€” Control-plane foundation
 
 - [x] FastAPI service and dashboard scaffold
 - [x] Local SQLite metadata
 - [x] Docker Compose development setup
 - [x] Initial architecture and open-source license
 
-## Milestone 2 — First virtualization provider
+## Milestone 2 â€” First virtualization provider
 
 - [x] Windows Hyper-V node agent scaffold
 - [x] Bearer-token protected typed API
@@ -33,18 +33,18 @@
 - [x] Add initial multi-user RBAC, VM ownership, VM-count quotas, login throttling, and administrative audit view
 - [ ] Secure node enrollment, mutual TLS, token rotation, and production-grade rate limiting
 
-## Milestone 3 — Linux provider and secure node enrollment
+## Milestone 3 â€” Linux provider and secure node enrollment
 
 - [x] Experimental libvirt/KVM provider prototype behind the shared node-agent API
 - [ ] Real-host libvirt acceptance tests and provider conformance suite
 - [x] One-time node enrollment tokens (hashed at rest, 15-minute expiry, single use)
 - [x] Per-node credentials, authenticated heartbeat API, and administrator revocation (agent push loop and rotation remain open)
 - [ ] Mutual TLS between control plane and agents
-- [ ] Job queue for long-running VM operations
-- [ ] Node heartbeats and health status
-- [ ] Resource-aware multi-node scheduler
+- [x] SQLite-backed asynchronous provisioning queue with durable job state and conservative restart recovery (single API worker; no safe automatic retries yet)
+- [x] Node heartbeats and health status
+- [x] Resource-aware node placement preview (provisioning dispatch/reservation not yet integrated)
 
-## Milestone 4 — Guest networking and usable VPS
+## Milestone 4 â€” Guest networking and usable VPS
 
 - [ ] Isolated virtual networks and firewall policies
 - [ ] DHCP/IP allocation and public IP management
@@ -52,14 +52,15 @@
 - [x] SSH public-key injection and Ubuntu cloud-init seed generation (Hyper-V prototype)
 - [ ] VM templates and snapshots
 
-## Milestone 5 — Multi-tenant hosting
+## Milestone 5 â€” Multi-tenant hosting
 
 - [x] Initial customer accounts, administrator/customer roles, ownership checks, and VM-count quotas
-- [ ] Resource-based quotas, usage metering, billing, and customer self-service password recovery
+- [x] Resource-based VM/CPU/memory/storage quotas and transactional allocation reservation
+- [ ] Usage metering, billing, and customer self-service password recovery
 - [ ] Multi-node scheduler and placement policies
 - [ ] Backups, restore, and operational alerts
 
-## Milestone 6 — Plugin ecosystem and AI integrations
+## Milestone 6 â€” Plugin ecosystem and AI integrations
 
 - [x] Draft plugin architecture, capability security model, and integration phases
 - [ ] Versioned plugin manifest schema and capability registry
@@ -70,18 +71,15 @@
 - [ ] Isolated plugin runtime, signing, health checks, and lifecycle management
 - [ ] Plugin SDK, sample plugins, and developer documentation
 
-## Engineering gate — before public hosting
+## Engineering gate â€” before public hosting
 
 - [ ] Run the complete backend and agent test suites on a clean Windows 11 Pro/Enterprise host
 - [ ] Validate VM create/start/stop/console/network/delete against real Hyper-V
 - [ ] Validate cloud-init on each explicitly supported Ubuntu Server ISO release
 - [ ] Add rollback/cleanup for partially completed VM provisioning
-- [ ] Add durable jobs, retries, idempotency keys, and lifecycle reconciliation
+- [x] Persist provisioning jobs and recover queued work after API restarts
+- [ ] Add provider idempotency keys, safe retries, lifecycle reconciliation and operator recovery workflow
 - [ ] Add encrypted backups and tested restore procedures
 - [ ] Complete threat modelling, dependency scanning, secret rotation, and external security review
 - [ ] Add resource enforcement, abuse controls, acceptable-use process, and operational monitoring
 - [ ] Document hardware, bandwidth, electricity, public-IP, and support costs honestly
-
-- [x] Customer VM, vCPU, memory and storage quotas with transactional allocation reservation.
-- [x] Durable provisioning execution records and owner-scoped job status lookup.
-- [ ] Detached durable worker queue, restart recovery and safe retry semantics.

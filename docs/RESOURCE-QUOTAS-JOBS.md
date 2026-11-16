@@ -1,9 +1,21 @@
-﻿# Resource quotas and provisioning records
+﻿# Resource quotas and durable provisioning worker
 
-Customer accounts support independent VM-count, vCPU, memory (MiB), and storage (GiB) limits. Defaults for newly created accounts are 3 VMs, 8 vCPU, 16 GiB memory, and 200 GiB storage. Administrators can override these values through the existing user create/update API. Existing databases are upgraded in place.
+Customer accounts support independent VM-count, vCPU, memory (MiB), and storage (GiB) limits. Defaults for new accounts are 3 VMs, 8 vCPU, 16 GiB memory, and 200 GiB storage. Administrators can override limits through the user create/update API. Existing databases are upgraded in place.
 
-VM creation reserves its requested allocation in `vm_ownership` inside a SQLite `BEGIN IMMEDIATE` transaction before calling the configured node agent. This serializes concurrent quota checks and prevents two requests from oversubscribing the same account. Failed agent calls release the allocation and leave a failed provisioning record; successful calls mark the record succeeded.
+## Queue lifecycle
 
-Every create request receives a durable provisioning record. Retrieve its status with `GET /api/jobs/{job_id}`; administrators can inspect all jobs by ID, while customers can only read their own. The create response includes `provisioning_job_id`.
+`POST /api/vms` validates the request, reserves the customer's resource allocation, and inserts a `queued` provisioning job in one SQLite `BEGIN IMMEDIATE` transaction. It returns HTTP `202 Accepted` with a `provisioning_job_id`. The frontend polls `GET /api/jobs/{job_id}` and displays the job state. Customers can read only their own jobs; administrators can inspect jobs by ID.
 
-**Scope note:** provisioning is still a synchronous API request against the single configured agent. The job record is durable execution tracking, not yet a detached worker queue with automatic restart/retry. Multi-node dispatch and asynchronous worker recovery remain future work. Existing VM records migrated from older databases receive conservative baseline allocation values (1 vCPU, 512 MiB, 8 GiB) because historical actual allocations are not available in the old schema.
+The API process runs a single asynchronous queue consumer. It claims one queued job transactionally (`queued` → `running`), dispatches the typed VM-create request to the configured node agent, and persists `succeeded` plus the result or `failed` plus a bounded error. The job record, request, attempts and status survive process restarts. The queue currently uses SQLite and the existing single configured agent; it does not yet dispatch to the selected scheduler node.
+
+## Crash and failure safety
+
+At startup, any job left `running` is changed to `failed` with an explicit reconciliation warning. The worker does **not** automatically replay it: a process may have crashed after the provider created the VM but before the result was committed. Replaying such an operation could create a duplicate or conflict with an existing VM. The corresponding ownership/allocation reservation is deliberately retained until an operator reconciles the provider state. This is conservative quota accounting, not automatic cleanup.
+
+Agent errors are recorded as failed and the allocation is retained for the same reason: a timeout or transport failure does not prove that the provider did not perform the operation. Safe automated retries require provider-side idempotency keys and an authoritative VM reconciliation API; neither is implemented yet.
+
+## Deployment constraints
+
+Run exactly one API process/worker while using this SQLite-backed queue. Multi-process worker coordination, leases/heartbeats, a dedicated broker, multi-node routing, automated retries, cancellation, and operator reconciliation endpoints are future work. Do not deploy multiple Uvicorn workers against this implementation: each process runs startup recovery and a worker loop. Use a single worker until distributed coordination is added.
+
+Existing VM records migrated from older databases receive conservative baseline allocations (1 vCPU, 512 MiB, 8 GiB) because historical actual allocations are not available in the old schema.
