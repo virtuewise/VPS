@@ -138,9 +138,19 @@ def auth_session(request: Request) -> dict[str, Any]:
 
 @app.post("/api/auth/login", tags=["authentication"])
 def auth_login(request: LoginRequest, response: Response) -> dict[str, Any]:
+    username_key = request.username.strip().lower()
+    client_ip = request.client.host if request.client else "unknown"
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        attempts = connection.execute("SELECT COUNT(*) FROM login_attempts WHERE username_key=? AND client_ip=? AND attempted_at >= datetime('now','-15 minutes')", (username_key, client_ip)).fetchone()[0]
+        if attempts >= 5:
+            raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.")
         row = connection.execute("SELECT id,username,password_hash,role,active FROM users WHERE username=? COLLATE NOCASE", (request.username,)).fetchone()
-    if not row or not row[4] or not verify_password(request.password, row[2]): raise HTTPException(status_code=401, detail="Invalid username or password.")
+        if not row or not row[4] or not verify_password(request.password, row[2]):
+            connection.execute("INSERT INTO login_attempts(username_key,client_ip) VALUES(?,?)", (username_key, client_ip))
+            connection.commit()
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+        connection.execute("DELETE FROM login_attempts WHERE username_key=? AND client_ip=?", (username_key, client_ip))
+        connection.commit()
     csrf = secrets.token_urlsafe(32)
     expires = int(time.time()) + SESSION_TTL_SECONDS
     payload = _b64(json.dumps({"user_id": row[0], "expires": expires, "csrf": csrf}, separators=(",", ":")).encode("utf-8"))
