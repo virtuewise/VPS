@@ -40,7 +40,8 @@ class AccountApiTests(unittest.TestCase):
         self.assertEqual(issued.json()["expires_in_seconds"], 900)
 
         import hashlib
-        with sqlite3.connect(TEST_DB) as db:
+        from contextlib import closing
+        with closing(sqlite3.connect(TEST_DB)) as db:
             stored = db.execute("SELECT token_hash FROM node_enrollment_tokens").fetchone()[0]
         self.assertNotEqual(stored, token)
         self.assertEqual(stored, hashlib.sha256(token.encode()).hexdigest())
