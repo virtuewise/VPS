@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -37,7 +38,7 @@ SESSION_COOKIE = "vwps_session"
 MCP_READ_TOKEN = os.getenv("VPS_MCP_READ_TOKEN", "")
 MCP_SCOPES = {"health.read", "vms.read", "nodes.read", "resources.read"}
 MCP_ADMIN_SCOPES = {"nodes.read", "resources.read"}
-app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.9.0")
+app = FastAPI(title="VirtueWise VPS API", description="Open-source, self-hosted VPS control plane.", version="0.10.0")
 _worker_task: asyncio.Task | None = None
 
 
@@ -62,6 +63,8 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE nodes ADD COLUMN inventory_json TEXT NOT NULL DEFAULT '[]'")
         if "switches_json" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN switches_json TEXT NOT NULL DEFAULT '[]'")
+        if "switches_seen" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN switches_seen INTEGER")
         connection.execute("""CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL, hostname TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -83,6 +86,12 @@ def initialize_database() -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_queue ON node_commands(node_id,status,created_at)")
+        connection.execute("""CREATE TABLE IF NOT EXISTS managed_networks (
+            node_id INTEGER NOT NULL REFERENCES nodes(id), name TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('isolated','nat')), cidr TEXT,
+            status TEXT NOT NULL CHECK(status IN ('provisioning','active','deleting')),
+            created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(node_id,name))""")
         connection.commit()
 
 
@@ -122,9 +131,9 @@ def scheduler_node_snapshot(connection: sqlite3.Connection) -> list[dict[str, An
             resources = json.loads(row[4] or "{}")
         except (ValueError, TypeError):
             resources = {}
-        switch_row = connection.execute("SELECT switches_json FROM nodes WHERE id=?", (row[0],)).fetchone()
+        switch_row = connection.execute("SELECT switches_json,switches_seen FROM nodes WHERE id=?", (row[0],)).fetchone()
         try:
-            switches = json.loads(switch_row[0] or "[]") if switch_row else []
+            switches = json.loads(switch_row[0] or "[]") if switch_row and switch_row[1] and int(time.time()) - int(switch_row[1]) <= 180 else []
         except (ValueError, TypeError):
             switches = []
         reserved = connection.execute("""SELECT COALESCE(SUM(cpu_count),0),
@@ -276,10 +285,19 @@ class NodeHeartbeatRequest(BaseModel):
     memory_used_mb: int | None = Field(default=None, ge=0, le=16777216)
     storage_total_gb: float | None = Field(default=None, ge=0, le=10000000, allow_inf_nan=False)
     storage_used_gb: float | None = Field(default=None, ge=0, le=10000000, allow_inf_nan=False)
-    provider: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    provider: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     agent_version: str | None = Field(default=None, min_length=1, max_length=64)
+    capabilities: list[str] | None = Field(default=None, max_length=32)
     inventory: list[dict[str, Any]] | None = Field(default=None, max_length=1000)
     switches: list[dict[str, Any]] | None = Field(default=None, max_length=500)
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, value: list[str] | None) -> list[str] | None:
+        allowed = {"inventory.read", "host.metrics.read", "vm.create", "vm.power", "vm.delete", "vm.console", "network.manage"}
+        if value is not None and (len(value) != len(set(value)) or any(item not in allowed for item in value)):
+            raise ValueError("Node reported unknown or duplicate provider capabilities.")
+        return value
 
     @field_validator("inventory")
     @classmethod
@@ -322,6 +340,13 @@ class NodeHeartbeatRequest(BaseModel):
         if value is not None and total is not None and value > total:
             raise ValueError("Storage usage cannot exceed reported total storage.")
         return value
+
+
+class CreateNetworkRequest(BaseModel):
+    node_id: int = Field(ge=1)
+    name: str = Field(min_length=2, max_length=63, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,62}$")
+    mode: str = Field(pattern=r"^(isolated|nat)$")
+    cidr: str | None = Field(default=None, max_length=32)
 
 
 class NodeCommandCompleteRequest(BaseModel):
@@ -387,7 +412,7 @@ class CreateVMRequest(BaseModel):
 
 @app.get("/api/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.9.0"}
+    return {"status": "ok", "service": "virtuewise-vps-api", "version": "0.10.0"}
 
 
 @app.get("/api/auth/session", tags=["authentication"])
@@ -542,7 +567,7 @@ def live_node_rows() -> list[sqlite3.Row]:
     cutoff = int(time.time()) - 180
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
-        return connection.execute("SELECT id,name,hostname,status,last_seen,resources_json,inventory_json,switches_json FROM nodes WHERE status!='revoked' AND last_seen>=? ORDER BY id", (cutoff,)).fetchall()
+        return connection.execute("SELECT id,name,hostname,status,last_seen,resources_json,inventory_json,switches_json,switches_seen FROM nodes WHERE status='online' AND last_seen>=? ORDER BY id", (cutoff,)).fetchall()
 
 
 @app.get("/api/agent/status", tags=["agent"], dependencies=[Depends(require_user)])
@@ -593,12 +618,16 @@ async def list_vms(user: dict[str, Any] = Depends(require_user)) -> dict[str, An
     return result
 
 
-@app.get("/api/switches", tags=["agent"], dependencies=[Depends(require_user)])
-async def list_switches() -> dict[str, Any]:
+@app.get("/api/switches", tags=["agent"])
+async def list_switches(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if user["role"] != "admin":
+        return {"items": []}
     live = live_node_rows()
     if live:
         items: list[dict[str, Any]] = []
         for node in live:
+            if not node["switches_seen"] or int(time.time()) - int(node["switches_seen"]) > 180:
+                continue
             try:
                 switches = json.loads(node["switches_json"] or "[]")
             except (ValueError, TypeError):
@@ -643,6 +672,8 @@ async def get_monitor() -> dict[str, Any]:
 @app.post("/api/vms", tags=["instances"], status_code=202)
 def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     """Reserve customer quota and enqueue VM provisioning for the durable worker."""
+    if user["role"] != "admin" and request.switch_name is not None:
+        raise HTTPException(status_code=403, detail="Customer network attachment is disabled until tenant network assignments and firewall isolation are configured.")
     job_id = str(uuid.uuid4())
     with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
         connection.execute("PRAGMA busy_timeout=15000")
@@ -1019,7 +1050,7 @@ def authenticate_node(connection: sqlite3.Connection, node_id: int, request: Req
 def node_heartbeat(node_id: int, request: Request, payload: NodeHeartbeatRequest) -> dict[str, Any]:
     now = int(time.time())
     body = payload.model_dump()
-    resources = {key: value for key, value in body.items() if key in {"cpu_total", "cpu_used", "memory_total_mb", "memory_used_mb", "storage_total_gb", "storage_used_gb", "provider", "agent_version"} and value is not None}
+    resources = {key: value for key, value in body.items() if key in {"cpu_total", "cpu_used", "memory_total_mb", "memory_used_mb", "storage_total_gb", "storage_used_gb", "provider", "agent_version", "capabilities"} and value is not None}
     inventory = body.get("inventory")
     switches = body.get("switches")
     if inventory is not None and (not isinstance(inventory, list) or len(inventory) > 1000 or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in inventory)):
@@ -1033,8 +1064,9 @@ def node_heartbeat(node_id: int, request: Request, payload: NodeHeartbeatRequest
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         authenticate_node(connection, node_id, request)
         cursor = connection.execute("""UPDATE nodes SET status='online',last_seen=?,resources_json=?,
-            inventory_json=COALESCE(?,inventory_json),switches_json=COALESCE(?,switches_json)
-            WHERE id=?""", (now, json.dumps(resources, separators=(",", ":")), inventory_json, switches_json, node_id))
+            inventory_json=COALESCE(?,inventory_json),switches_json=COALESCE(?,switches_json),
+            switches_seen=CASE WHEN ? IS NULL THEN switches_seen ELSE ? END
+            WHERE id=?""", (now, json.dumps(resources, separators=(",", ":")), inventory_json, switches_json, switches_json, now, node_id))
         connection.commit()
         if cursor.rowcount != 1:
             raise HTTPException(status_code=401, detail="Node identity is invalid or revoked.")
@@ -1064,10 +1096,13 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
                           completion: NodeCommandCompleteRequest) -> dict[str, Any]:
     result_payload = dict(completion.result) if completion.result is not None else None
     inventory_snapshot = result_payload.pop("_inventory", None) if result_payload is not None else None
+    switches_snapshot = result_payload.pop("_switches", None) if result_payload is not None else None
     if inventory_snapshot is not None and (not isinstance(inventory_snapshot, list) or len(inventory_snapshot) > 1000 or any(not isinstance(item, dict) for item in inventory_snapshot)):
         raise HTTPException(status_code=422, detail="Node command inventory snapshot is invalid.")
     if inventory_snapshot is not None and len(json.dumps(inventory_snapshot, separators=(",", ":")).encode("utf-8")) > 2_000_000:
         raise HTTPException(status_code=413, detail="Node command inventory snapshot exceeds 2 MB.")
+    if switches_snapshot is not None and (not isinstance(switches_snapshot, list) or len(switches_snapshot) > 500 or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in switches_snapshot)):
+        raise HTTPException(status_code=422, detail="Node command switch snapshot is invalid.")
     result_json = json.dumps(result_payload, separators=(",", ":"), allow_nan=False) if result_payload is not None else None
     if result_json and len(result_json.encode("utf-8")) > 1_000_000:
         raise HTTPException(status_code=413, detail="Node command result exceeds the 1 MB limit.")
@@ -1083,6 +1118,8 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
                            (completion.status, result_json, completion.error[:1000] if completion.error else None, command_id))
         if completion.status == "succeeded" and inventory_snapshot is not None:
             connection.execute("UPDATE nodes SET inventory_json=? WHERE id=?", (json.dumps(inventory_snapshot, separators=(",", ":")), node_id))
+        if completion.status == "succeeded" and switches_snapshot is not None:
+            connection.execute("UPDATE nodes SET switches_json=?,switches_seen=? WHERE id=?", (json.dumps(switches_snapshot, separators=(",", ":")), int(time.time()), node_id))
         if row[0]:
             job_status = "succeeded" if completion.status == "succeeded" else "failed"
             connection.execute("UPDATE provisioning_jobs SET status=?,result_json=?,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
@@ -1094,6 +1131,135 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
         if owner and completion.status == "succeeded":
             audit(DATABASE_PATH, {"id": row[1], "username": owner[1]}, "vm.create", owner[0], f"job_id={row[0]}; node_id={node_id}")
     return {"accepted": True, "command_id": command_id, "status": completion.status}
+
+
+@app.get("/api/networks", tags=["networks"])
+def list_managed_networks(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, list[dict[str, Any]]]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute("""SELECT m.node_id,n.name AS node_name,n.status AS node_status,n.last_seen,
+            n.switches_json,m.name,m.mode,m.cidr,m.status,m.created_at,n.switches_seen
+            FROM managed_networks m JOIN nodes n ON n.id=m.node_id ORDER BY n.name,m.name""").fetchall()
+    now = int(time.time())
+    items = []
+    for row in rows:
+        try:
+            switches = json.loads(row[4] or "[]")
+        except (ValueError, TypeError):
+            switches = []
+        present = any(isinstance(item, dict) and item.get("name") == row[5] for item in switches)
+        status = row[8]
+        online = bool(row[3]) and now - int(row[3]) <= 180 and row[2] == "online"
+        if not online:
+            status = "offline"
+        elif not row[10] or now - int(row[10]) > 180:
+            status = "unknown"
+        elif status == "provisioning" and present:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute("UPDATE managed_networks SET status='active' WHERE node_id=? AND name=? AND status='provisioning'", (row[0], row[5]))
+                connection.commit()
+            status = "active"
+        elif status == "deleting" and not present:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='deleting'", (row[0], row[5]))
+                connection.commit()
+            continue
+        elif status == "active" and not present:
+            status = "missing"
+        items.append({"node_id": row[0], "node_name": row[1], "name": row[5], "mode": row[6],
+                      "cidr": row[7], "status": status, "present": present, "created_at": row[9]})
+    return {"items": items}
+
+
+@app.post("/api/networks", tags=["networks"])
+async def create_network(request: CreateNetworkRequest, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute("SELECT status,last_seen,resources_json,switches_json,switches_seen FROM nodes WHERE id=? AND status!='revoked'", (request.node_id,)).fetchone()
+    if not row or row[0] != "online" or not row[1] or int(time.time()) - int(row[1]) > 180:
+        raise HTTPException(status_code=409, detail="Selected node is offline or has a stale heartbeat.")
+    try:
+        resources = json.loads(row[2] or "{}")
+        switches = json.loads(row[3] or "[]")
+    except (ValueError, TypeError):
+        resources, switches = {}, []
+    if not row[4] or int(time.time()) - int(row[4]) > 180:
+        raise HTTPException(status_code=409, detail="Selected node has no fresh virtual-switch inventory; wait for a successful inventory heartbeat.")
+    provider = resources.get("provider")
+    if "network.manage" not in resources.get("capabilities", []):
+        raise HTTPException(status_code=422, detail="Node provider manifest does not grant network.manage.")
+    if provider == "hyperv" and (request.mode != "isolated" or request.cidr is not None):
+        raise HTTPException(status_code=422, detail="Hyper-V currently supports isolated private switches only; CIDR/DHCP and NAT are not configured by VirtueWise.")
+    if provider == "libvirt" and not request.cidr:
+        raise HTTPException(status_code=422, detail="Libvirt networks require an explicit IPv4 CIDR.")
+    if any(isinstance(item, dict) and item.get("name") == request.name for item in switches):
+        raise HTTPException(status_code=409, detail="A network with this name already exists on the selected node and is not managed by VirtueWise.")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        try:
+            connection.execute("INSERT INTO managed_networks(node_id,name,mode,cidr,status,created_by) VALUES(?,?,?,?, 'provisioning',?)",
+                               (request.node_id, request.name, request.mode, request.cidr, admin["id"]))
+            connection.commit()
+        except sqlite3.IntegrityError:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="A VirtueWise network with this name is already recorded on the selected node.") from None
+    try:
+        result = await dispatch_node_command(request.node_id, admin["id"], "network.create",
+                                             {"name": request.name, "mode": request.mode, "cidr": request.cidr})
+    except HTTPException as exc:
+        if exc.status_code != 504:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='provisioning'", (request.node_id, request.name))
+                connection.commit()
+        raise
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("UPDATE managed_networks SET status='active' WHERE node_id=? AND name=?", (request.node_id, request.name))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "network.create", request.name, f"node_id={request.node_id}; mode={request.mode}; cidr={request.cidr or ''}")
+    return result
+
+
+@app.delete("/api/networks/{node_id}/{name}", tags=["networks"])
+async def delete_network(node_id: int, name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+        raise HTTPException(status_code=422, detail="Invalid virtual network name.")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        node = connection.execute("SELECT status,last_seen,switches_json,switches_seen FROM nodes WHERE id=? AND status!='revoked'", (node_id,)).fetchone()
+        network = connection.execute("SELECT status FROM managed_networks WHERE node_id=? AND name=?", (node_id, name)).fetchone()
+    if not network:
+        raise HTTPException(status_code=404, detail="VirtueWise-managed network not found.")
+    if network[0] != "active":
+        raise HTTPException(status_code=409, detail=f"Network cannot be deleted while its recorded state is {network[0]}.")
+    if not node or node[0] != "online" or not node[1] or int(time.time()) - int(node[1]) > 180:
+        raise HTTPException(status_code=409, detail="Selected node is offline or has a stale heartbeat.")
+    if not node[3] or int(time.time()) - int(node[3]) > 180:
+        raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a successful switches heartbeat.")
+    try:
+        reported_switches = json.loads(node[2] or "[]")
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a valid heartbeat.") from None
+    present = any(isinstance(item, dict) and item.get("name") == name for item in reported_switches)
+    if not present:
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='active'", (node_id, name))
+            connection.commit()
+        audit(DATABASE_PATH, admin, "network.forget", name, f"node_id={node_id}; absent from fresh provider inventory")
+        return {"forgotten": True, "name": name, "node_id": node_id}
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        cursor = connection.execute("UPDATE managed_networks SET status='deleting' WHERE node_id=? AND name=? AND status='active'", (node_id, name))
+        connection.commit()
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="Network state changed; refresh the network list and retry.")
+    try:
+        result = await dispatch_node_command(node_id, admin["id"], "network.delete", {"name": name})
+    except HTTPException as exc:
+        if exc.status_code != 504:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+                connection.execute("UPDATE managed_networks SET status='active' WHERE node_id=? AND name=? AND status='deleting'", (node_id, name))
+                connection.commit()
+        raise
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=?", (node_id, name))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "network.delete", name, f"node_id={node_id}")
+    return result
 
 
 @app.post("/api/nodes/{node_id}/rotate-credential", tags=["nodes"])

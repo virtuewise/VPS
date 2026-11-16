@@ -18,7 +18,7 @@ def main() -> int:
             provider = getattr(module, class_name)()
         if method == "vm_action" and payload.get("action") not in {"start", "stop", "delete", "console"}:
             raise ValueError("Unsupported VM action")
-        operations = {"list_vms": lambda: provider.list_vms(), "list_switches": lambda: provider.list_switches(), "host_monitor": lambda: provider.host_monitor(), "create_vm": lambda: provider.create_vm(**payload), "vm_action": lambda: provider.vm_action(payload["action"], payload["name"], delete_disks=payload.get("delete_disks", False))}
+        operations = {"list_vms": lambda: provider.list_vms(), "list_switches": lambda: provider.list_switches(), "host_monitor": lambda: provider.host_monitor(), "create_vm": lambda: provider.create_vm(**payload), "vm_action": lambda: provider.vm_action(payload["action"], payload["name"], delete_disks=payload.get("delete_disks", False)), "create_network": lambda: provider.create_network(**payload), "delete_network": lambda: provider.delete_network(payload["name"])}
         if method not in operations:
             raise ValueError("Unsupported provider operation")
         with redirect_stdout(sys.stderr):

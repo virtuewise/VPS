@@ -22,6 +22,24 @@ class HyperVProviderTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 422)
                 self.assertFalse((Path(temp) / "test-vm").exists())
 
+    def test_creates_only_isolated_private_networks(self):
+        with patch.object(hyperv, "_run", return_value={"name": "tenant-a", "switch_type": "Private"}) as run:
+            result = hyperv.create_network(name="tenant-a", mode="isolated")
+        self.assertEqual(result["name"], "tenant-a")
+        run.assert_called_once_with("network-create", {"name": "tenant-a", "mode": "isolated", "cidr": None})
+        with self.assertRaises(HTTPException):
+            hyperv.create_network(name="tenant-a", mode="nat", cidr="192.168.10.0/24")
+
+    def test_protects_builtin_default_switch(self):
+        with self.assertRaises(HTTPException) as caught:
+            hyperv.delete_network("Default Switch")
+        self.assertEqual(caught.exception.status_code, 409)
+
+    def test_deletes_network_through_typed_provider_action(self):
+        with patch.object(hyperv, "_run", return_value={"deleted": True, "name": "tenant-a"}) as run:
+            self.assertTrue(hyperv.delete_network("tenant-a")["deleted"])
+        run.assert_called_once_with("network-delete", {"name": "tenant-a"})
+
     def test_failed_provisioning_removes_generated_seed_media(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -33,7 +33,8 @@ def heartbeat_config(env: dict[str, str] | None = None) -> tuple[str, int, str, 
     return url, int(node_id), token, interval
 
 
-def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: list[dict] | None = None, switches: list[dict] | None = None) -> dict:
+def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: list[dict] | None = None,
+                      switches: list[dict] | None = None, capabilities: list[str] | None = None) -> dict:
     total = int(monitor.get("memory_total_mb") or 0)
     free = int(monitor.get("memory_free_mb") or 0)
     storage_total = float(monitor.get("storage_total_gb") or 0)
@@ -44,12 +45,14 @@ def heartbeat_payload(monitor: dict, provider: str, version: str, inventory: lis
         "memory_total_mb": total, "memory_used_mb": max(0, total - free),
         "storage_total_gb": storage_total, "storage_used_gb": max(0, round(storage_total - storage_free, 1)),
         "provider": provider, "agent_version": version,
+        **({"capabilities": capabilities} if capabilities is not None else {}),
         **({"inventory": inventory} if inventory is not None else {}),
         **({"switches": switches} if switches is not None else {}),
     }
 
 
-async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_name: str, version: str) -> None:
+async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_name: str, version: str,
+                         capabilities: list[str] | None = None) -> None:
     url, node_id, token, interval = config
     endpoint = f"{url}/api/nodes/{node_id}/heartbeat"
     backoff = 5
@@ -67,7 +70,7 @@ async def heartbeat_loop(config: tuple[str, int, str, int], provider, provider_n
                 except Exception as exc:
                     log.warning("Node switch refresh failed (%s); retaining previous snapshot", type(exc).__name__)
                     switches = None
-                payload = heartbeat_payload(monitor, provider_name, version, inventory, switches)
+                payload = heartbeat_payload(monitor, provider_name, version, inventory, switches, capabilities)
                 response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {token}"})
                 response.raise_for_status()
                 backoff = 5
@@ -107,6 +110,30 @@ async def execute_node_command(provider, kind: str, payload: dict):
             if any(not isinstance(cloud_init[key], str) or not cloud_init[key] for key in cloud_init):
                 raise ValueError("Invalid cloud-init values in create command.")
         operation = await asyncio.to_thread(provider.create_vm, **payload)
+    elif kind == "network.create":
+        if set(payload) != {"name", "mode", "cidr"}:
+            raise ValueError("Invalid network create command payload.")
+        name, mode, cidr = payload["name"], payload["mode"], payload["cidr"]
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+            raise ValueError("Invalid virtual network name.")
+        if mode not in {"isolated", "nat"}:
+            raise ValueError("Invalid virtual network mode.")
+        if cidr is not None and (not isinstance(cidr, str) or len(cidr) > 32):
+            raise ValueError("Invalid network CIDR.")
+        method = getattr(provider, "create_network", None)
+        if not callable(method):
+            raise ValueError("Configured provider does not support network management.")
+        operation = await asyncio.to_thread(method, name=name, mode=mode, cidr=cidr)
+    elif kind == "network.delete":
+        if set(payload) != {"name"}:
+            raise ValueError("Invalid network delete command payload.")
+        name = payload["name"]
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+            raise ValueError("Invalid virtual network name.")
+        method = getattr(provider, "delete_network", None)
+        if not callable(method):
+            raise ValueError("Configured provider does not support network management.")
+        operation = await asyncio.to_thread(method, name)
     elif kind in {"vm.start", "vm.stop", "vm.delete", "vm.console"}:
         name = payload.get("name")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{2,39}", name):
@@ -123,10 +150,27 @@ async def execute_node_command(provider, kind: str, payload: dict):
             operation = await asyncio.to_thread(provider.vm_action, action, name)
     else:
         raise ValueError("Unsupported node command type.")
-    inventory = await asyncio.to_thread(provider.list_vms)
-    if not isinstance(operation, dict) or not isinstance(inventory, list):
-        raise TypeError("Provider returned an invalid command result or inventory.")
-    return {**operation, "_inventory": inventory}
+    if not isinstance(operation, dict):
+        raise TypeError("Provider returned an invalid command result.")
+    result = dict(operation)
+    try:
+        inventory = await asyncio.to_thread(provider.list_vms)
+        if isinstance(inventory, list):
+            result["_inventory"] = inventory
+        else:
+            log.warning("Provider returned invalid VM inventory after a successful command; retaining the previous snapshot")
+    except Exception as exc:
+        log.warning("VM inventory refresh failed after a successful command (%s); retaining the previous snapshot", type(exc).__name__)
+    if kind.startswith("network."):
+        try:
+            switches = await asyncio.to_thread(provider.list_switches)
+            if isinstance(switches, list):
+                result["_switches"] = switches
+            else:
+                log.warning("Provider returned invalid switch inventory after a successful network command; retaining the previous snapshot")
+        except Exception as exc:
+            log.warning("Switch inventory refresh failed after a successful network command (%s); retaining the previous snapshot", type(exc).__name__)
+    return result
 
 
 async def node_command_loop(config: tuple[str, int, str, int], provider) -> None:

@@ -16,6 +16,7 @@ class ProviderManifestTests(unittest.TestCase):
             self.assertEqual(manifest.id, f"com.virtuewise.provider.{name}")
             self.assertEqual(manifest.runtime, "builtin")
             self.assertIn("vm.create", manifest.capabilities)
+            self.assertIn("network.manage", manifest.capabilities)
 
     def test_rejects_incompatible_api(self):
         with self.assertRaisesRegex(ValueError, "supports API"):

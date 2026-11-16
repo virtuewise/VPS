@@ -50,8 +50,8 @@
 
 ## Milestone 4 â€” Guest networking and usable VPS
 
-- [ ] Isolated virtual networks and firewall policies
-- [ ] DHCP/IP allocation and public IP management
+- [x] Provider-managed isolated networks (Hyper-V private switches; libvirt isolated DHCP and NAT/DHCP with CIDR overlap checks)
+- [ ] Tenant firewall policies, public IP allocation, static DHCP leases and routed network management
 - [ ] Browser-based console gateway (noVNC or equivalent)
 - [x] SSH public-key injection and Ubuntu cloud-init seed generation (Hyper-V prototype)
 - [ ] VM templates and snapshots

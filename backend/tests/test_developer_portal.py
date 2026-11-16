@@ -20,6 +20,8 @@ class DeveloperPortalTests(unittest.TestCase):
         self.assertIn("node-enroll-form", response.text)
         self.assertIn("node-enroll-copy", response.text)
         self.assertIn("node-management-content", response.text)
+        self.assertIn("network-form", response.text)
+        self.assertIn("networks-content", response.text)
 
     def test_portal_assets_are_served(self):
         for path in ("/assets/developers.css", "/assets/developers.js"):

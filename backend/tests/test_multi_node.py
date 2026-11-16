@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
 from contextlib import closing
 from pathlib import Path
 
@@ -84,7 +85,8 @@ class MultiNodeTests(unittest.TestCase):
             self.assertEqual(claimed.json()["command"]["id"], command[0])
             self.assertIsNone(client.post(f"/api/nodes/{node_id}/commands/claim", headers=node_headers).json()["command"])
             completed = client.post(f"/api/nodes/{node_id}/commands/{command[0]}/complete", headers=node_headers, json={
-                "status": "succeeded", "result": {"name": "multi-node-vm", "_inventory": [{"name": "multi-node-vm", "state": "Off"}]}
+                "status": "succeeded", "result": {"name": "multi-node-vm", "_inventory": [{"name": "multi-node-vm", "state": "Off"}],
+                    "_switches": [{"name": "Default Switch", "switch_type": "Internal"}]}
             })
             self.assertEqual(completed.status_code, 200, completed.text)
             self.assertEqual(client.post(f"/api/nodes/{node_id}/commands/{command[0]}/complete", headers=node_headers, json={"status": "succeeded", "result": {}}).status_code, 404)
@@ -98,20 +100,101 @@ class MultiNodeTests(unittest.TestCase):
             self.assertEqual(inventory["items"][0]["node_id"], node_id)
             nodes = client.get("/api/nodes", headers=headers).json()
             self.assertEqual(nodes["items"][0]["vm_count"], 1)
+            switches = client.get("/api/switches", headers=headers).json()
+            self.assertEqual(switches["items"][0]["name"], "Default Switch")
             monitor = client.get("/api/monitor", headers=headers).json()
             self.assertEqual(monitor["nodes_online"], 1)
 
             # A telemetry refresh that temporarily cannot read inventory must retain the last good snapshot.
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                switches_seen_before = db.execute("SELECT switches_seen FROM nodes WHERE id=?", (node_id,)).fetchone()[0]
             partial = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={"provider": "hyperv"})
             self.assertEqual(partial.status_code, 200, partial.text)
             retained = client.get("/api/vms", headers=headers).json()
             self.assertEqual(retained["items"][0]["name"], "multi-node-vm")
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                switches_seen_after = db.execute("SELECT switches_seen FROM nodes WHERE id=?", (node_id,)).fetchone()[0]
+            self.assertEqual(switches_seen_after, switches_seen_before)
 
             # The VM's persisted reservation reduces schedulable node capacity.
             blocked = client.post("/api/scheduler/placement", headers=headers, json={
                 "cpu_count": 7, "memory_mb": 1024, "disk_gb": 10, "provider": "hyperv"
             })
             self.assertEqual(blocked.status_code, 409, blocked.text)
+
+    def test_network_management_is_admin_only_and_provider_scoped(self):
+        with TestClient(main.app) as client:
+            self.assertEqual(client.post("/api/networks", json={"node_id": 1, "name": "no-auth", "mode": "isolated"}).status_code, 401)
+            admin_headers = self._login(client)
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "cpu_total": 8, "cpu_used": 0.1, "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20, "provider": "libvirt", "agent_version": "test",
+                "capabilities": ["inventory.read", "network.manage"], "inventory": [], "switches": [],
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            with patch("app.main.dispatch_node_command", new_callable=AsyncMock) as dispatch:
+                dispatch.return_value = {"name": "tenant-net", "active": True}
+                created = client.post("/api/networks", headers=admin_headers, json={
+                    "node_id": node_id, "name": "tenant-net", "mode": "nat", "cidr": "192.168.80.0/24"
+                })
+                self.assertEqual(created.status_code, 200, created.text)
+                dispatch.assert_awaited_once_with(node_id, 1, "network.create", {
+                    "name": "tenant-net", "mode": "nat", "cidr": "192.168.80.0/24"
+                })
+            duplicate = client.post("/api/networks", headers=admin_headers, json={
+                "node_id": node_id, "name": "tenant-net", "mode": "nat", "cidr": "192.168.81.0/24"
+            })
+            self.assertEqual(duplicate.status_code, 409)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                db.execute("UPDATE nodes SET switches_json=? WHERE id=?", (json.dumps([{"name": "tenant-net", "switch_type": "nat"}]), node_id))
+                db.commit()
+            managed = client.get("/api/networks", headers=admin_headers).json()
+            self.assertEqual(managed["items"][0]["status"], "active")
+            self.assertTrue(managed["items"][0]["present"])
+            self.assertEqual(client.delete(f"/api/networks/{node_id}/unmanaged-net", headers=admin_headers).status_code, 404)
+            with patch("app.main.dispatch_node_command", new_callable=AsyncMock) as dispatch:
+                dispatch.return_value = {"name": "tenant-net", "deleted": True}
+                deleted = client.delete(f"/api/networks/{node_id}/tenant-net", headers=admin_headers)
+                self.assertEqual(deleted.status_code, 200, deleted.text)
+                dispatch.assert_awaited_once_with(node_id, 1, "network.delete", {"name": "tenant-net"})
+            self.assertEqual(client.get("/api/networks", headers=admin_headers).json()["items"], [])
+            with patch("app.main.dispatch_node_command", new_callable=AsyncMock) as dispatch:
+                dispatch.return_value = {"name": "orphaned-net", "created": True}
+                self.assertEqual(client.post("/api/networks", headers=admin_headers, json={
+                    "node_id": node_id, "name": "orphaned-net", "mode": "nat", "cidr": "192.168.82.0/24"
+                }).status_code, 200)
+            self.assertEqual(client.get("/api/networks", headers=admin_headers).json()["items"][0]["status"], "missing")
+            forgotten = client.delete(f"/api/networks/{node_id}/orphaned-net", headers=admin_headers)
+            self.assertEqual(forgotten.status_code, 200, forgotten.text)
+            self.assertTrue(forgotten.json()["forgotten"])
+            unsupported = client.post("/api/networks", headers=admin_headers, json={
+                "node_id": node_id, "name": "tenant-nat", "mode": "isolated"
+            })
+            self.assertEqual(unsupported.status_code, 422, unsupported.text)
+
+    def test_signed_plugin_network_capability_is_reported_and_honored(self):
+        with TestClient(main.app) as client:
+            admin_headers = self._login(client)
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "org.example.virtualization", "agent_version": "test",
+                "capabilities": ["inventory.read", "network.manage"],
+                "cpu_total": 8, "cpu_used": 0, "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20, "inventory": [], "switches": [],
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            with patch("app.main.dispatch_node_command", new_callable=AsyncMock) as dispatch:
+                dispatch.return_value = {"name": "plugin-net", "created": True}
+                response = client.post("/api/networks", headers=admin_headers, json={
+                    "node_id": node_id, "name": "plugin-net", "mode": "isolated"
+                })
+            self.assertEqual(response.status_code, 200, response.text)
+            dispatch.assert_awaited_once_with(node_id, 1, "network.create", {
+                "name": "plugin-net", "mode": "isolated", "cidr": None
+            })
 
     def test_customer_inventory_is_filtered_to_owned_vms_across_nodes(self):
         with TestClient(main.app) as client:
@@ -136,7 +219,14 @@ class MultiNodeTests(unittest.TestCase):
             customer_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
             node_summary = client.get("/api/nodes", headers=customer_headers)
             self.assertEqual(node_summary.status_code, 200, node_summary.text)
+            self.assertEqual(client.get("/api/networks", headers=customer_headers).status_code, 403)
             self.assertEqual(set(node_summary.json()["items"][0]), {"id", "name", "status", "vm_count"})
+            self.assertEqual(client.get("/api/switches", headers=customer_headers).json()["items"], [])
+            blocked_network_vm = client.post("/api/vms", headers=customer_headers, json={
+                "name": "customer-vm", "iso_path": "C:\\ISO\\ubuntu.iso", "memory_mb": 1024,
+                "disk_gb": 10, "cpu_count": 1, "switch_name": "Default Switch"
+            })
+            self.assertEqual(blocked_network_vm.status_code, 403, blocked_network_vm.text)
             inventory = client.get("/api/vms", headers=customer_headers)
             self.assertEqual(inventory.status_code, 200, inventory.text)
             self.assertEqual([item["name"] for item in inventory.json()["items"]], ["owned-vm"])

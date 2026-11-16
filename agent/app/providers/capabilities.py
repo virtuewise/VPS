@@ -8,6 +8,7 @@ CAPABILITY_METHODS: dict[str, tuple[str, ...]] = {
     "vm.power": ("vm_action",),
     "vm.delete": ("vm_action",),
     "vm.console": ("vm_action",),
+    "network.manage": ("create_network", "delete_network"),
 }
 
 

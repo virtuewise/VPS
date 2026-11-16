@@ -24,7 +24,7 @@ if len(AGENT_TOKEN) < 32:
 async def lifespan(application: FastAPI):
     config = heartbeat_config()
     tasks = [
-        asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.4.0")),
+        asyncio.create_task(heartbeat_loop(config, hyperv, PROVIDER_NAME, "0.5.0", PROVIDER_MANIFEST.capabilities)),
         asyncio.create_task(node_command_loop(config, hyperv)),
     ] if config else []
     try:
@@ -39,7 +39,7 @@ async def lifespan(application: FastAPI):
                 pass
 
 
-app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.4.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="VirtueWise VPS Node Agent", description="Authenticated, allow-listed VM operations for a Hyper-V or KVM/libvirt node.", version="0.5.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def require_provider_capability(capability: str) -> None:
@@ -86,7 +86,7 @@ class DeleteVMRequest(VMNameRequest):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "provider_id": PROVIDER_MANIFEST.id, "provider_version": PROVIDER_MANIFEST.version, "version": "0.4.0"}
+    return {"status": "ok", "agent": "virtuewise-vps-node-agent", "provider": PROVIDER_NAME, "provider_id": PROVIDER_MANIFEST.id, "provider_version": PROVIDER_MANIFEST.version, "version": "0.5.0"}
 
 
 @app.get("/v1/vms", dependencies=[Depends(require_token)])

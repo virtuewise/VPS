@@ -65,6 +65,7 @@ class ProviderPackageTests(unittest.TestCase):
     def test_capability_and_action_allowlists_are_enforced(self):
         provider = WorkerProvider(self.package, {**MANIFEST, "capabilities": ["inventory.read"]}, sandbox_mode="process")
         with self.assertRaises(PermissionError): provider.create_vm(name="demo")
+        with self.assertRaises(PermissionError): provider.create_network(name="tenant-net", mode="isolated", cidr=None)
         with self.assertRaises(ValueError): provider.vm_action("arbitrary", "demo")
 
     def test_disable_revokes_runtime_calls_and_uninstall_requires_disabled(self):

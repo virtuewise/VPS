@@ -96,6 +96,22 @@ switch ($env:VPS_HYPERV_ACTION) {
     $result = @{ deleted = $true; name = $name; disks_deleted = [bool]$payload.delete_disks; retained_disk_paths = @($managed | Where-Object { Test-Path -LiteralPath $_ }) }
   }
   'switches' { $result = @(Get-VMSwitch | Select-Object Name, SwitchType) }
+  'network-create' {
+    $name = [string]$payload.name
+    if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{1,62}$') { throw 'Invalid virtual switch name.' }
+    if (Get-VMSwitch -Name $name -ErrorAction SilentlyContinue) { throw 'A virtual switch with this name already exists.' }
+    if ([string]$payload.mode -ne 'isolated' -or $payload.cidr) { throw 'Hyper-V supports isolated private switches only; CIDR/DHCP configuration is not managed by this provider.' }
+    $created = New-VMSwitch -Name $name -SwitchType Private
+    $result = @{ name = $created.Name; switch_type = [string]$created.SwitchType; isolated = $true }
+  }
+  'network-delete' {
+    $name = [string]$payload.name
+    if (-not (Get-VMSwitch -Name $name -ErrorAction SilentlyContinue)) { throw 'Virtual switch not found.' }
+    $attached = @(Get-VMNetworkAdapter -All | Where-Object { $_.SwitchName -eq $name })
+    if ($attached.Count -gt 0) { throw 'Virtual switch is attached to one or more VMs; detach their adapters before deletion.' }
+    Remove-VMSwitch -Name $name -Force
+    $result = @{ deleted = $true; name = $name }
+  }
   'console' {
     $vm = Get-VM -Name ([string]$payload.name) -ErrorAction Stop
     $exe = Join-Path $env:SystemRoot 'System32\vmconnect.exe'
@@ -260,3 +276,19 @@ def vm_action(action: str, name: str, *, delete_disks: bool = False) -> Any:
 
 def host_monitor() -> dict[str, Any]:
     return _run("monitor") or {}
+
+
+def create_network(*, name: str, mode: str, cidr: str | None = None) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+        raise HTTPException(status_code=422, detail="Invalid virtual network name.")
+    if mode != "isolated" or cidr:
+        raise HTTPException(status_code=422, detail="Hyper-V provider supports isolated private switches only; CIDR/DHCP is not managed here.")
+    return _run("network-create", {"name": name, "mode": mode, "cidr": None})
+
+
+def delete_network(name: str) -> dict[str, Any]:
+    if isinstance(name, str) and name.casefold() == "default switch":
+        raise HTTPException(status_code=409, detail="The built-in Hyper-V Default Switch is protected.")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+        raise HTTPException(status_code=422, detail="Invalid virtual network name.")
+    return _run("network-delete", {"name": name})

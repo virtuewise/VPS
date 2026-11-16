@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import ipaddress
 import os
 import re
 import shutil
 import subprocess
 import time
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -241,3 +244,96 @@ def vm_action(action: str, name: str, *, delete_disks: bool = False) -> Any:
             shutil.rmtree(seed_dir, ignore_errors=True)
         return {"deleted": True, "name": name, "disks_deleted": delete_disks}
     raise ValueError("Unsupported VM action")
+
+
+def _network_name(name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
+        raise HTTPException(status_code=422, detail="Invalid virtual network name.")
+
+
+def _network_xml(name: str, mode: str, cidr: str) -> str:
+    _network_name(name)
+    if mode not in {"isolated", "nat"}:
+        raise HTTPException(status_code=422, detail="Network mode must be isolated or nat.")
+    try:
+        network = ipaddress.ip_network(cidr, strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Provide a valid IPv4 network CIDR with an aligned network address.") from exc
+    if not isinstance(network, ipaddress.IPv4Network) or not 16 <= network.prefixlen <= 29:
+        raise HTTPException(status_code=422, detail="Network CIDR must be IPv4 with a prefix between /16 and /29.")
+    gateway = network.network_address + 1
+    dhcp_start = network.network_address + 2
+    dhcp_end = network.broadcast_address - 1
+    if dhcp_start > dhcp_end:
+        raise HTTPException(status_code=422, detail="Network CIDR is too small for DHCP allocation.")
+    root = ET.Element("network")
+    ET.SubElement(root, "name").text = name
+    if mode == "nat":
+        ET.SubElement(root, "forward", {"mode": "nat"})
+    bridge = "vw" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    ET.SubElement(root, "bridge", {"name": bridge, "stp": "on", "delay": "0"})
+    ip_node = ET.SubElement(root, "ip", {"address": str(gateway), "netmask": str(network.netmask)})
+    dhcp = ET.SubElement(ip_node, "dhcp")
+    ET.SubElement(dhcp, "range", {"start": str(dhcp_start), "end": str(dhcp_end)})
+    return ET.tostring(root, encoding="unicode")
+
+
+def create_network(*, name: str, mode: str, cidr: str | None = None) -> dict[str, Any]:
+    _network_name(name)
+    if not cidr:
+        raise HTTPException(status_code=422, detail="A non-overlapping IPv4 CIDR is required for libvirt networks.")
+    xml = _network_xml(name, mode, cidr)
+    existing = [item.strip() for item in _run([VIRSH, "net-list", "--all", "--name"]).splitlines() if item.strip()]
+    if name in existing:
+        raise HTTPException(status_code=409, detail="A libvirt network with this name already exists.")
+    requested = ipaddress.ip_network(cidr, strict=True)
+    for current_name in existing:
+        try:
+            current_xml = ET.fromstring(_run([VIRSH, "net-dumpxml", current_name]))
+            ip_node = current_xml.find("ip")
+            if ip_node is not None and ip_node.get("address") and ip_node.get("netmask"):
+                existing_network = ipaddress.ip_network(f"{ip_node.get('address')}/{ip_node.get('netmask')}", strict=False)
+                if requested.overlaps(existing_network):
+                    raise HTTPException(status_code=409, detail="Requested CIDR overlaps an existing libvirt network.")
+        except ET.ParseError:
+            raise HTTPException(status_code=502, detail="Existing libvirt network XML is invalid.") from None
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".xml", delete=False) as handle:
+            handle.write(xml)
+            path = handle.name
+        _run([VIRSH, "net-define", path])
+        try:
+            _run([VIRSH, "net-autostart", name])
+            _run([VIRSH, "net-start", name])
+        except Exception:
+            try:
+                _run([VIRSH, "net-undefine", name])
+            except Exception:
+                pass
+            raise
+    finally:
+        if path:
+            Path(path).unlink(missing_ok=True)
+    return {"name": name, "mode": mode, "cidr": cidr, "gateway": str(requested.network_address + 1),
+            "dhcp_start": str(requested.network_address + 2), "dhcp_end": str(requested.broadcast_address - 1),
+            "active": True, "autostart": True}
+
+
+def delete_network(name: str) -> dict[str, Any]:
+    _network_name(name)
+    if name.casefold() == "default":
+        raise HTTPException(status_code=409, detail="The built-in libvirt default network is protected.")
+    existing = [item.strip() for item in _run([VIRSH, "net-list", "--all", "--name"]).splitlines() if item.strip()]
+    if name not in existing:
+        raise HTTPException(status_code=404, detail="Libvirt network not found.")
+    domains = [item.strip() for item in _run([VIRSH, "list", "--all", "--name"]).splitlines() if item.strip()]
+    for domain in domains:
+        rows = _run([VIRSH, "domiflist", domain]).splitlines()[2:]
+        if any(len(parts := row.split()) >= 3 and parts[2] == name for row in rows):
+            raise HTTPException(status_code=409, detail="Network is attached to a VM; detach its virtual NIC before deletion.")
+    info = _run([VIRSH, "net-info", name])
+    if re.search(r"^Active:\s+yes$", info, re.MULTILINE | re.IGNORECASE):
+        _run([VIRSH, "net-destroy", name])
+    _run([VIRSH, "net-undefine", name])
+    return {"deleted": True, "name": name}

@@ -111,6 +111,18 @@
         </form>
         <div id="node-enroll-once" class="mcp-token-once" hidden><b>Copy this enrollment token now. It expires in 15 minutes and cannot be retrieved again.</b><code id="node-enroll-value"></code><button id="node-enroll-copy" type="button" class="secondary">Copy token</button></div>
         <div id="node-management-content" class="audit-list">Loading compute nodes.</div>
+        <h4>Virtual networks</h4>
+        <p class="muted">Create isolated networks on a connected node. libvirt supports isolated DHCP and NAT/DHCP networks; Hyper-V supports private isolated switches only.</p>
+        <form id="network-form" class="create-form">
+          <div class="form-grid">
+            <label>Compute node<select id="network-node" name="node_id" required></select></label>
+            <label>Network mode<select id="network-mode" name="mode"><option value="isolated">Isolated network</option><option value="nat">NAT with DHCP</option></select></label>
+            <label>Network name<input name="name" minlength="2" maxlength="63" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{1,62}" placeholder="tenant-net" required></label>
+            <label>IPv4 CIDR (libvirt)<input id="network-cidr" name="cidr" maxlength="32" placeholder="192.168.80.0/24"></label>
+          </div>
+          <div class="form-actions"><button type="submit">Create virtual network</button></div>
+        </form>
+        <div id="networks-content" class="audit-list">No managed virtual networks loaded.</div>
       </div>
       <div class="ownership-transfer">
         <h4>Scoped MCP credentials</h4>

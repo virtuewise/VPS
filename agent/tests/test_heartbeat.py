@@ -24,10 +24,11 @@ class HeartbeatTests(unittest.TestCase):
     def test_payload_includes_vm_and_switch_inventory_snapshots(self):
         payload = heartbeat_payload(
             {"memory_total_mb": 4096, "memory_free_mb": 2048, "storage_total_gb": 100, "storage_free_gb": 50, "cpu_percent": 10},
-            "hyperv", "0.4.0", [{"name": "demo"}], [{"name": "Default Switch"}],
+            "hyperv", "0.4.0", [{"name": "demo"}], [{"name": "Default Switch"}], ["inventory.read", "network.manage"],
         )
         self.assertEqual(payload["inventory"], [{"name": "demo"}])
         self.assertEqual(payload["switches"], [{"name": "Default Switch"}])
+        self.assertIn("network.manage", payload["capabilities"])
 
     def test_executes_only_typed_vm_commands_and_refreshes_inventory(self):
         class Provider:
@@ -46,6 +47,7 @@ class HeartbeatTests(unittest.TestCase):
         class Provider:
             def create_vm(self, **kwargs): return {"created": kwargs["name"]}
             def list_vms(self): return [{"name": "demo"}]
+            def list_switches(self): return []
         class Response:
             def __init__(self, payload): self.payload = payload
             def raise_for_status(self): return None
@@ -66,6 +68,42 @@ class HeartbeatTests(unittest.TestCase):
                 asyncio.run(node_command_loop(("http://127.0.0.1:8000", 1, "x" * 40, 60), Provider()))
         self.assertEqual(Client.completion["status"], "succeeded")
         self.assertEqual(Client.completion["result"]["_inventory"], [{"name": "demo"}])
+
+    def test_executes_typed_network_commands_and_refreshes_switch_inventory(self):
+        class Provider:
+            def create_network(self, **kwargs): return {"name": kwargs["name"], "active": True}
+            def delete_network(self, name): return {"name": name, "deleted": True}
+            def list_vms(self): return []
+            def list_switches(self): return [{"name": "tenant-net", "switch_type": "isolated"}]
+        provider = Provider()
+        created = asyncio.run(execute_node_command(provider, "network.create", {
+            "name": "tenant-net", "mode": "isolated", "cidr": None
+        }))
+        self.assertEqual(created["name"], "tenant-net")
+        self.assertEqual(created["_switches"][0]["name"], "tenant-net")
+        deleted = asyncio.run(execute_node_command(provider, "network.delete", {"name": "tenant-net"}))
+        self.assertTrue(deleted["deleted"])
+
+    def test_rejects_untyped_or_unsupported_network_commands(self):
+        class Provider:
+            def list_vms(self): return []
+            def list_switches(self): return []
+        with self.assertRaisesRegex(ValueError, "mode"):
+            asyncio.run(execute_node_command(Provider(), "network.create", {
+                "name": "tenant-net", "mode": "external", "cidr": None
+            }))
+        with self.assertRaisesRegex(ValueError, "does not support"):
+            asyncio.run(execute_node_command(Provider(), "network.delete", {"name": "tenant-net"}))
+
+    def test_inventory_refresh_failure_does_not_turn_successful_operation_into_failure(self):
+        class Provider:
+            def create_vm(self, **kwargs): return {"created": kwargs["name"]}
+            def list_vms(self): raise RuntimeError("temporary inventory failure")
+        result = asyncio.run(execute_node_command(Provider(), "vm.create", {
+            "name": "demo", "memory_mb": 1024, "disk_gb": 10, "cpu_count": 1, "iso_path": "/tmp/iso"
+        }))
+        self.assertEqual(result["created"], "demo")
+        self.assertNotIn("_inventory", result)
 
     def test_rejects_invalid_create_limits_and_non_boolean_delete_flag(self):
         class Provider:

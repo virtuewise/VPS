@@ -6,7 +6,7 @@
 - SQLite stores users, quotas, VM ownership, nodes, signed MCP token metadata, durable provisioning jobs and node commands.
 - Node agents enroll with single-use tokens, then send authenticated HTTPS heartbeats and VM/switch inventory over outbound connections.
 - The control plane performs resource-aware node placement with persisted CPU/RAM/storage reservations.
-- VM create/start/stop/delete/console commands are dispatched over a typed, authenticated node polling channel; the agent does not need an inbound network listener.
+- VM lifecycle and provider-capability-gated virtual network commands are dispatched over a typed, authenticated node polling channel; the agent does not need an inbound network listener.
 - Hyper-V and libvirt are first-party providers; the provider SDK supports signed third-party packages in an isolated worker profile.
 
 ## Target architecture
@@ -35,7 +35,7 @@ The control plane never runs arbitrary host commands or mounts the host Docker s
 3. [x] One-time node enrollment, per-node bearer identity and authenticated heartbeat.
 4. [x] Outbound node command channel and VM/switch inventory snapshots.
 5. [x] Resource-aware multi-node provisioning and VM lifecycle routing.
-6. [ ] Network isolation, snapshots, backups and browser console.
+6. [ ] Tenant firewall policy, public IPs, snapshots, backups and browser console.
 7. [ ] Distributed queue coordination, mTLS and real-host certification.
 
 ## Laptop-first development

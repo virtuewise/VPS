@@ -37,3 +37,8 @@ The monitor reports a point-in-time sample of host CPU utilization, physical mem
 The control plane now has local username/password accounts, administrator and customer roles, signed expiring sessions, CSRF protection, login throttling, VM ownership checks, VM-count quotas, and administrative audit events. These are useful development controls, not a completed production security review. Nodes now use single-use enrollment, hashed per-node credentials, authenticated outbound heartbeats and a typed outbound command queue. Mutual TLS, multi-process queue coordination and independent security review remain outstanding. Multi-node scheduling and node-routed provisioning are implemented but still need real-host validation.
 
 Keep both the control plane and agent bound to loopback while developing. Do not expose the agent or an unaudited control plane to the LAN or internet. Console launch is a privileged host-side action. Back up the SQLite database and VM disks before upgrades or destructive operations.
+
+
+## Isolated virtual switches
+
+VirtueWise can create and remove private Hyper-V virtual switches through the authenticated node command channel. The provider refuses to remove a switch while any VM adapter is attached and protects the built-in Default Switch. Private switches connect attached guests to each other but do not provide host access, DHCP, NAT or public connectivity. Configure guest IPs and any required routing/DHCP service separately; do not treat a private switch as a complete hosting network.

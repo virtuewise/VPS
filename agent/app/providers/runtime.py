@@ -101,6 +101,18 @@ class WorkerProvider:
         if not isinstance(result, dict): raise TypeError("Provider create_vm must return an object")
         return result
 
+    def create_network(self, *, name, mode, cidr=None):
+        self._require("network.manage")
+        result = self._call("create_network", {"name": name, "mode": mode, "cidr": cidr})
+        if not isinstance(result, dict): raise TypeError("Provider create_network must return an object")
+        return result
+
+    def delete_network(self, name):
+        self._require("network.manage")
+        result = self._call("delete_network", {"name": name})
+        if not isinstance(result, dict): raise TypeError("Provider delete_network must return an object")
+        return result
+
     def vm_action(self, action, name, *, delete_disks=False):
         if action not in {"start", "stop", "delete", "console"}:
             raise ValueError("Unsupported VM action")

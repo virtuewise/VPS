@@ -61,7 +61,8 @@
           "vm.create",
           "vm.power",
           "vm.delete",
-          "vm.console"
+          "vm.console",
+          "network.manage"
         ]
       }
     },

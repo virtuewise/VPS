@@ -28,3 +28,16 @@ def validate_provider(provider: Any) -> None:
     missing = [method for method in required if not callable(getattr(provider, method, None))]
     if missing:
         raise TypeError("Provider is missing required methods: " + ", ".join(missing))
+
+
+class NetworkProvider(Protocol):
+    """Optional provider extension for administrator-managed isolated networks."""
+    def create_network(self, *, name: str, mode: str, cidr: str | None = None) -> dict[str, Any]: ...
+    def delete_network(self, name: str) -> dict[str, Any]: ...
+
+
+def validate_network_provider(provider: Any) -> None:
+    required = ("create_network", "delete_network")
+    missing = [method for method in required if not callable(getattr(provider, method, None))]
+    if missing:
+        raise TypeError("Network provider is missing required methods: " + ", ".join(missing))

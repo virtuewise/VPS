@@ -55,7 +55,7 @@ The agent periodically sends authenticated CPU, memory, storage, provider, VM in
 - `POST /api/nodes/{node_id}/commands/claim`
 - `POST /api/nodes/{node_id}/commands/{command_id}/complete`
 
-The command vocabulary is finite and typed: `vm.create`, `vm.start`, `vm.stop`, `vm.delete`, and `vm.console`. There is no arbitrary shell, Python expression or command-execution endpoint. The agent refreshes VM inventory after successful lifecycle commands.
+The command vocabulary is finite and typed: `vm.create`, `vm.start`, `vm.stop`, `vm.delete`, `vm.console`, `network.create` and `network.delete`. There is no arbitrary shell, Python expression or command-execution endpoint. The agent refreshes VM and virtual-switch inventory after successful commands. Administrator network operations are exposed in the dashboard. Hyper-V creates private isolated switches only; it does not configure DHCP, NAT or IPAM. libvirt supports isolated DHCP networks and NAT/DHCP networks with administrator-supplied non-overlapping IPv4 CIDRs. A network cannot be deleted while a VM NIC is attached; built-in default networks are protected. Switch inventory must be fresh before a network can be created or reconciled. Customer accounts cannot enumerate host switches or attach arbitrary host networks until tenant network assignments and firewall isolation are implemented.
 
 ## 4. Scheduling and provisioning
 

@@ -13,7 +13,8 @@
     "vm.create",
     "vm.power",
     "vm.delete",
-    "vm.console"
+    "vm.console",
+    "network.manage"
   ],
   "maintainer": "VirtueWise",
   "license": "MIT"
