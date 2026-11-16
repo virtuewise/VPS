@@ -32,6 +32,12 @@ class AccountApiTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200, login.text)
         admin_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
 
+        for _ in range(5):
+            failed = client.post("/api/auth/login", json={"username": "unknown-user", "password": "incorrect"})
+            self.assertEqual(failed.status_code, 401)
+        limited = client.post("/api/auth/login", json={"username": "unknown-user", "password": "incorrect"})
+        self.assertEqual(limited.status_code, 429)
+
         no_csrf = client.post("/api/users", json={
             "username": "blocked", "password": "long-password-123456", "role": "user", "vm_quota": 1
         })
