@@ -19,6 +19,7 @@ class LibvirtProviderTests(unittest.TestCase):
         self.assertEqual(domain.findtext("name"), "future-vm")
         self.assertEqual(domain.findtext("memory"), "2048")
         self.assertIsNone(domain.find("devices/interface"))
+        self.assertIsNotNone(domain.find("devices/channel/target[@name=\"org.qemu.guest_agent.0\"]"))
 
     def test_create_defines_vm_without_starting_it(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -59,6 +60,14 @@ class LibvirtProviderTests(unittest.TestCase):
                         cpu_count=2, iso_path=str(iso), switch_name=None)
             self.assertEqual(caught.exception.status_code, 409)
             self.assertEqual(run.call_count, 1)
+
+    def test_power_actions_are_idempotent_for_running_and_stopped_domains(self):
+        with patch.object(libvirt, "_run", return_value="running") as run:
+            self.assertEqual(libvirt.vm_action("start", "future-vm")["state"], "running")
+            run.assert_called_once_with([libvirt.VIRSH, "domstate", "future-vm"])
+        with patch.object(libvirt, "_run", return_value="shut off") as run:
+            self.assertEqual(libvirt.vm_action("stop", "future-vm")["state"], "shut off")
+            run.assert_called_once_with([libvirt.VIRSH, "domstate", "future-vm"])
 
     def test_rejects_unsafe_vm_names(self):
         with self.assertRaises(HTTPException) as caught:
