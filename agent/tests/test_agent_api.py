@@ -16,7 +16,10 @@ class AgentApiTests(unittest.TestCase):
     def test_health_is_public_but_vm_inventory_requires_token(self):
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/v1/vms").status_code, 401)
-        self.assertEqual(self.client.get("/v1/vms", headers=self.headers).status_code, 501)
+        with patch("app.main.hyperv.list_vms", return_value=[]):
+            inventory = self.client.get("/v1/vms", headers=self.headers)
+        self.assertEqual(inventory.status_code, 200, inventory.text)
+        self.assertEqual(inventory.json(), {"items": []})
 
     def test_cloud_init_rejects_incomplete_or_unsafe_credentials(self):
         response = self.client.post("/v1/vms", headers=self.headers, json={
