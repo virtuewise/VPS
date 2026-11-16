@@ -111,6 +111,9 @@
         </form>
         <div id="node-enroll-once" class="mcp-token-once" hidden><b>Copy this enrollment token now. It expires in 15 minutes and cannot be retrieved again.</b><code id="node-enroll-value"></code><button id="node-enroll-copy" type="button" class="secondary">Copy token</button></div>
         <div id="node-management-content" class="audit-list">Loading compute nodes.</div>
+        <h4>Provisioning recovery</h4>
+        <p class="muted">Resolve interrupted VM creation only after the assigned node reports a fresh inventory. Confirming absence releases the ownership and quota reservation; confirming presence closes the job as successful. These actions never replay a provider command.</p>
+        <div id="provisioning-recovery-content" class="audit-list">Loading unresolved provisioning jobs.</div>
         <h4>Virtual networks</h4>
         <p class="muted">Create isolated networks on a connected node. libvirt supports isolated DHCP and NAT/DHCP networks; Hyper-V supports private isolated switches only.</p>
         <form id="network-form" class="create-form">

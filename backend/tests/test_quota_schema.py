@@ -15,6 +15,8 @@ class QuotaSchemaTests(unittest.TestCase):
                 self.assertTrue({'cpu_count','memory_mb','disk_gb','node_id','network_name'}.issubset(columns))
                 tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 self.assertIn('provisioning_jobs',tables)
+                job_columns={r[1] for r in conn.execute('PRAGMA table_info(provisioning_jobs)')}
+                self.assertTrue({'reconciliation_status','reconciled_by','reconciled_at','reconciliation_note'}.issubset(job_columns))
             initialize_tenancy(db, 'a-secure-test-password-long-enough')
 
 if __name__=='__main__': unittest.main()

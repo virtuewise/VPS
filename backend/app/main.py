@@ -65,6 +65,8 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE nodes ADD COLUMN switches_json TEXT NOT NULL DEFAULT '[]'")
         if "switches_seen" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN switches_seen INTEGER")
+        if "inventory_seen" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN inventory_seen INTEGER")
         connection.execute("""CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL, hostname TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -204,7 +206,7 @@ async def provisioning_worker() -> None:
                 connection.commit()
         else:
             with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-                connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'", (json.dumps(result, default=str)[:20000], job_id))
+                connection.execute("UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,reconciliation_status='not_required',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'", (json.dumps(result, default=str)[:20000], job_id))
                 connection.commit()
             with closing(sqlite3.connect(DATABASE_PATH)) as connection:
                 owner = connection.execute("SELECT j.user_id,j.vm_name,u.username FROM provisioning_jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", (job_id,)).fetchone()
@@ -358,6 +360,10 @@ class CreateNetworkRequest(BaseModel):
 
 class NetworkAssignmentRequest(BaseModel):
     user_id: int = Field(ge=1)
+
+
+class ProvisioningReconcileRequest(BaseModel):
+    action: str = Field(pattern=r"^(confirm_present|confirm_absent)$")
 
 
 class NodeCommandCompleteRequest(BaseModel):
@@ -765,12 +771,98 @@ def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_u
 def get_provisioning_job(job_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         connection.row_factory = sqlite3.Row
-        row = connection.execute("SELECT id,user_id,vm_name,status,attempts,error,created_at,updated_at,result_json,node_id FROM provisioning_jobs WHERE id=?", (job_id,)).fetchone()
+        row = connection.execute("SELECT id,user_id,vm_name,status,attempts,error,created_at,updated_at,result_json,node_id,reconciliation_status,reconciled_at,reconciliation_note FROM provisioning_jobs WHERE id=?", (job_id,)).fetchone()
     if not row or (user["role"] != "admin" and row["user_id"] != user["id"]):
         raise HTTPException(status_code=404, detail="Provisioning job not found.")
     item = dict(row)
     item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
     return item
+
+
+@app.get("/api/admin/provisioning-jobs", tags=["jobs"])
+def list_reconciliation_jobs(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("""SELECT j.id,j.vm_name,j.user_id,u.username,j.status,j.attempts,j.error,
+            j.created_at,j.updated_at,j.node_id,n.name AS node_name,n.status AS node_status,n.last_seen,n.inventory_seen,
+            j.reconciliation_status FROM provisioning_jobs j
+            JOIN users u ON u.id=j.user_id LEFT JOIN nodes n ON n.id=j.node_id
+            WHERE j.status='failed' AND j.reconciliation_status='pending' AND j.node_id IS NOT NULL
+            ORDER BY j.updated_at DESC LIMIT 100""").fetchall()
+    now = int(time.time())
+    items = []
+    for row in rows:
+        item = dict(row)
+        heartbeat_age = now-int(item["last_seen"]) if item["last_seen"] else None
+        inventory_age = now-int(item["inventory_seen"]) if item["inventory_seen"] else None
+        item["can_reconcile"] = bool(item["node_status"] != "revoked" and heartbeat_age is not None and 0 <= heartbeat_age <= 180
+                                      and inventory_age is not None and 0 <= inventory_age <= 180)
+        items.append(item)
+    return {"items": items}
+
+
+@app.post("/api/admin/provisioning-jobs/{job_id}/reconcile", tags=["jobs"])
+def reconcile_provisioning_job(job_id: str, request: ProvisioningReconcileRequest,
+                               admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Resolve an ambiguous VM-create result only against a fresh inventory from its assigned node."""
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("PRAGMA busy_timeout=15000")
+        connection.execute("BEGIN IMMEDIATE")
+        job = connection.execute("""SELECT user_id,vm_name,status,node_id,reconciliation_status
+            FROM provisioning_jobs WHERE id=?""", (job_id,)).fetchone()
+        if not job:
+            connection.rollback()
+            raise HTTPException(status_code=404, detail="Provisioning job not found.")
+        if job[2] != "failed" or job[4] != "pending" or job[3] is None:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Only unresolved failed jobs assigned to an enrolled node can be reconciled.")
+        node = connection.execute("SELECT status,last_seen,inventory_json,inventory_seen FROM nodes WHERE id=?", (job[3],)).fetchone()
+        now = int(time.time())
+        if not node or node[0] == "revoked" or not node[1] or not 0 <= now-int(node[1]) <= 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The assigned node must report a fresh heartbeat before reconciliation.")
+        if not node[3] or not 0 <= now-int(node[3]) <= 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The assigned node must report a fresh VM inventory snapshot; a heartbeat without inventory is not sufficient.")
+        try:
+            inventory = json.loads(node[2] or "[]")
+        except (ValueError, TypeError):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The assigned node inventory is invalid; reconciliation is blocked.") from None
+        if not isinstance(inventory, list) or any(not isinstance(item, dict) for item in inventory):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The assigned node inventory is incomplete; reconciliation is blocked.")
+        present = any(item.get("name") == job[1] for item in inventory)
+        if request.action == "confirm_present" and not present:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The VM is not present in the assigned node's latest inventory. Refresh inventory and verify before choosing an action.")
+        if request.action == "confirm_absent" and present:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="The VM is present in the assigned node's latest inventory; it cannot be marked absent.")
+        if present:
+            result = {"name": job[1], "node_id": job[3], "reconciled": True, "inventory_verified": True}
+            connection.execute("""UPDATE provisioning_jobs SET status='succeeded',result_json=?,error=NULL,
+                reconciliation_status='present',reconciled_by=?,reconciled_at=CURRENT_TIMESTAMP,
+                reconciliation_note='VM confirmed present in fresh assigned-node inventory',updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='failed' AND reconciliation_status='pending'""",
+                (json.dumps(result), admin["id"], job_id))
+            action = "provisioning.reconcile_present"
+        else:
+            connection.execute("DELETE FROM vm_ownership WHERE vm_name=? AND user_id=? AND node_id=?",
+                               (job[1], job[0], job[3]))
+            connection.execute("""UPDATE provisioning_jobs SET reconciliation_status='absent',
+                reconciled_by=?,reconciled_at=CURRENT_TIMESTAMP,
+                reconciliation_note='VM confirmed absent in fresh assigned-node inventory; ownership reservation released',
+                updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='failed' AND reconciliation_status='pending'""",
+                (admin["id"], job_id))
+            action = "provisioning.reconcile_absent"
+        connection.commit()
+    audit(DATABASE_PATH, admin, action, job[1], f"job_id={job_id}; node_id={job[3]}")
+    return {"job_id": job_id, "vm_name": job[1], "node_id": job[3],
+            "reconciliation_status": "present" if present else "absent",
+            "job_status": "succeeded" if present else "failed",
+            "reservation_released": not present,
+            "message": "VM exists; job marked successful." if present else "VM is absent; ownership and quota reservation released. A new provisioning request may now be submitted."}
 
 
 
@@ -1121,9 +1213,10 @@ def node_heartbeat(node_id: int, request: Request, payload: NodeHeartbeatRequest
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         authenticate_node(connection, node_id, request)
         cursor = connection.execute("""UPDATE nodes SET status='online',last_seen=?,resources_json=?,
-            inventory_json=COALESCE(?,inventory_json),switches_json=COALESCE(?,switches_json),
-            switches_seen=CASE WHEN ? IS NULL THEN switches_seen ELSE ? END
-            WHERE id=?""", (now, json.dumps(resources, separators=(",", ":")), inventory_json, switches_json, switches_json, now, node_id))
+            inventory_json=COALESCE(?,inventory_json),inventory_seen=CASE WHEN ? IS NULL THEN inventory_seen ELSE ? END,
+            switches_json=COALESCE(?,switches_json),switches_seen=CASE WHEN ? IS NULL THEN switches_seen ELSE ? END
+            WHERE id=?""", (now, json.dumps(resources, separators=(",", ":")), inventory_json, inventory_json, now,
+                               switches_json, switches_json, now, node_id))
         connection.commit()
         if cursor.rowcount != 1:
             raise HTTPException(status_code=401, detail="Node identity is invalid or revoked.")
@@ -1174,13 +1267,15 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
         connection.execute("UPDATE node_commands SET status=?,result_json=?,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (completion.status, result_json, completion.error[:1000] if completion.error else None, command_id))
         if completion.status == "succeeded" and inventory_snapshot is not None:
-            connection.execute("UPDATE nodes SET inventory_json=? WHERE id=?", (json.dumps(inventory_snapshot, separators=(",", ":")), node_id))
+            connection.execute("UPDATE nodes SET inventory_json=?,inventory_seen=? WHERE id=?",
+                               (json.dumps(inventory_snapshot, separators=(",", ":")), int(time.time()), node_id))
         if completion.status == "succeeded" and switches_snapshot is not None:
             connection.execute("UPDATE nodes SET switches_json=?,switches_seen=? WHERE id=?", (json.dumps(switches_snapshot, separators=(",", ":")), int(time.time()), node_id))
         if row[0]:
             job_status = "succeeded" if completion.status == "succeeded" else "failed"
-            connection.execute("UPDATE provisioning_jobs SET status=?,result_json=?,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
-                               (job_status, result_json, completion.error[:1000] if completion.error else None, row[0]))
+            connection.execute("UPDATE provisioning_jobs SET status=?,result_json=?,error=?,reconciliation_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
+                               (job_status, result_json, completion.error[:1000] if completion.error else None,
+                                "not_required" if completion.status == "succeeded" else "pending", row[0]))
         connection.commit()
     if row[0]:
         with closing(sqlite3.connect(DATABASE_PATH)) as connection:

@@ -34,3 +34,15 @@ When a customer selects a node-specific virtual switch, placement is constrained
 ## Virtual network management
 
 Administrators can create and delete node-local networks from the dashboard. Hyper-V supports private isolated switches, with no host access, DHCP or NAT configured by VirtueWise. libvirt supports isolated L2 networks with DHCP and NAT networks with DHCP. libvirt networks require a valid, non-overlapping IPv4 CIDR between /16 and /29; the control plane validates the node/provider, and the agent checks overlap against existing libvirt networks before defining the network. Operators must also avoid overlapping the node's physical LAN, VPN and routed address ranges; VirtueWise does not yet discover every external route. Networks are configured to autostart. Deletion is refused while any VM is attached, and built-in default networks are protected. A missing network record can be explicitly forgotten only after a fresh online-node inventory confirms the switch is absent. Ambiguous provisioning/deletion states remain visible for reconciliation. Customer accounts can attach only networks explicitly assigned to their account; each managed network can be assigned to one customer at a time. VM ownership records retain node/network attachment so unassignment, deletion and ownership transfer are blocked while they would break tenant boundaries. Unmanaged provider networks remain administrator-only. This is not yet a complete tenant firewall, public IP, routing or billing system; host firewall policy and external connectivity still require operator configuration.
+
+
+## Operator recovery for ambiguous node provisioning
+
+Failed VM-create jobs assigned to an enrolled node appear in the administrator dashboard's **Provisioning recovery** panel. Recovery is deliberately an inventory-verification workflow, not an automatic retry:
+
+1. The control plane requires both a fresh node heartbeat and a separately timestamped VM inventory snapshot no older than 180 seconds. A heartbeat that omits inventory does not refresh the inventory timestamp.
+2. **Confirm VM exists** is accepted only when the exact VM name appears in that assigned node's latest inventory. The job is marked successful and its ownership/quota reservation is retained.
+3. **Confirm VM absent** is accepted only when that exact VM name is absent from the fresh inventory. The failed job remains in history, while its ownership/quota reservation is released so an operator or customer can submit a new provisioning request.
+4. Both actions are administrator-only and audited. The endpoint rechecks node freshness and VM presence inside a serialized database transaction. Neither action sends a provider command.
+
+This first recovery workflow covers node-routed VM creation. Legacy single-agent jobs without an enrolled `node_id`, provider-side partial resource cleanup, VM start/stop/delete reconciliation, distributed worker leases and safe idempotent retries remain future work. If the assigned node is offline or cannot report a complete fresh inventory, recovery is blocked and the operator must restore node connectivity or investigate the provider directly.

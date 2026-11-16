@@ -108,14 +108,15 @@ class MultiNodeTests(unittest.TestCase):
 
             # A telemetry refresh that temporarily cannot read inventory must retain the last good snapshot.
             with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
-                switches_seen_before = db.execute("SELECT switches_seen FROM nodes WHERE id=?", (node_id,)).fetchone()[0]
+                switches_seen_before, inventory_seen_before = db.execute("SELECT switches_seen,inventory_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
             partial = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={"provider": "hyperv"})
             self.assertEqual(partial.status_code, 200, partial.text)
             retained = client.get("/api/vms", headers=headers).json()
             self.assertEqual(retained["items"][0]["name"], "multi-node-vm")
             with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
-                switches_seen_after = db.execute("SELECT switches_seen FROM nodes WHERE id=?", (node_id,)).fetchone()[0]
+                switches_seen_after, inventory_seen_after = db.execute("SELECT switches_seen,inventory_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
             self.assertEqual(switches_seen_after, switches_seen_before)
+            self.assertEqual(inventory_seen_after, inventory_seen_before)
 
             # The VM's persisted reservation reduces schedulable node capacity.
             blocked = client.post("/api/scheduler/placement", headers=headers, json={
@@ -275,6 +276,105 @@ class MultiNodeTests(unittest.TestCase):
         with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
             remaining_assignments = db.execute("SELECT COUNT(*) FROM tenant_network_assignments WHERE user_id=?", (customer2["id"],)).fetchone()[0]
         self.assertEqual(remaining_assignments, 0)
+
+    def test_operator_reconciliation_verifies_inventory_before_releasing_or_confirming_vm(self):
+        with TestClient(main.app) as client:
+            admin_headers = self._login(client)
+            customer = client.post("/api/users", headers=admin_headers, json={
+                "username": "recovery-customer", "password": "recovery-customer-password-123", "role": "user", "vm_quota": 5
+            }).json()
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+
+            def heartbeat(inventory):
+                return client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                    "provider": "hyperv", "agent_version": "test", "cpu_total": 8, "cpu_used": 0.1,
+                    "memory_total_mb": 32768, "memory_used_mb": 1024,
+                    "storage_total_gb": 500, "storage_used_gb": 20,
+                    "inventory": inventory, "switches": [],
+                })
+
+            def fail_create(name):
+                queued = client.post("/api/vms", headers=admin_headers, json={
+                    "name": name, "provider": "hyperv", "iso_path": "C:\\ISO\\ubuntu.iso",
+                    "memory_mb": 2048, "disk_gb": 30, "cpu_count": 2, "node_id": node_id,
+                })
+                self.assertEqual(queued.status_code, 202, queued.text)
+                job_id = queued.json()["provisioning_job_id"]
+                deadline = time.time() + 5
+                command = None
+                while time.time() < deadline:
+                    with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                        command = db.execute("SELECT id,status FROM node_commands WHERE job_id=?", (job_id,)).fetchone()
+                    if command:
+                        break
+                    time.sleep(0.05)
+                self.assertIsNotNone(command, "worker did not dispatch provisioning command")
+                claimed = client.post(f"/api/nodes/{node_id}/commands/claim", headers=node_headers)
+                self.assertEqual(claimed.status_code, 200, claimed.text)
+                self.assertEqual(claimed.json()["command"]["id"], command[0])
+                completed = client.post(f"/api/nodes/{node_id}/commands/{command[0]}/complete", headers=node_headers,
+                                        json={"status": "failed", "error": "Simulated interrupted provider result"})
+                self.assertEqual(completed.status_code, 200, completed.text)
+                return job_id
+
+            self.assertEqual(heartbeat([]).status_code, 200)
+            customer_login = client.post("/api/auth/login", json={"username": "recovery-customer", "password": "recovery-customer-password-123"})
+            customer_headers = {"X-CSRF-Token": customer_login.json()["csrf_token"]}
+            self.assertEqual(client.get("/api/admin/provisioning-jobs", headers=customer_headers).status_code, 403)
+            admin_headers = self._login(client)
+            absent_job = fail_create("reconcile-absent")
+            unresolved = client.get("/api/admin/provisioning-jobs", headers=admin_headers)
+            self.assertEqual(unresolved.status_code, 200, unresolved.text)
+            item = next(row for row in unresolved.json()["items"] if row["id"] == absent_job)
+            self.assertTrue(item["can_reconcile"])
+            self.assertIsNotNone(item["inventory_seen"])
+            self.assertEqual(client.post(f"/api/admin/provisioning-jobs/{absent_job}/reconcile", headers=customer_headers,
+                                         json={"action": "confirm_absent"}).status_code, 403)
+            wrong_present = client.post(f"/api/admin/provisioning-jobs/{absent_job}/reconcile", headers=admin_headers,
+                                        json={"action": "confirm_present"})
+            self.assertEqual(wrong_present.status_code, 409)
+            absent = client.post(f"/api/admin/provisioning-jobs/{absent_job}/reconcile", headers=admin_headers,
+                                 json={"action": "confirm_absent"})
+            self.assertEqual(absent.status_code, 200, absent.text)
+            self.assertTrue(absent.json()["reservation_released"])
+            self.assertEqual(client.get(f"/api/jobs/{absent_job}", headers=admin_headers).json()["reconciliation_status"], "absent")
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                self.assertIsNone(db.execute("SELECT vm_name FROM vm_ownership WHERE vm_name='reconcile-absent'").fetchone())
+                self.assertEqual(db.execute("SELECT reconciliation_status FROM provisioning_jobs WHERE id=?", (absent_job,)).fetchone()[0], "absent")
+
+            present_job = fail_create("reconcile-present")
+            self.assertEqual(heartbeat([{"name": "reconcile-present", "state": "Off"}]).status_code, 200)
+            wrong_absent = client.post(f"/api/admin/provisioning-jobs/{present_job}/reconcile", headers=admin_headers,
+                                       json={"action": "confirm_absent"})
+            self.assertEqual(wrong_absent.status_code, 409)
+            present = client.post(f"/api/admin/provisioning-jobs/{present_job}/reconcile", headers=admin_headers,
+                                  json={"action": "confirm_present"})
+            self.assertEqual(present.status_code, 200, present.text)
+            self.assertEqual(present.json()["job_status"], "succeeded")
+            self.assertEqual(client.get(f"/api/jobs/{present_job}", headers=admin_headers).json()["reconciliation_status"], "present")
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                state = db.execute("SELECT status,reconciliation_status FROM provisioning_jobs WHERE id=?", (present_job,)).fetchone()
+                self.assertEqual(state, ("succeeded", "present"))
+                self.assertIsNotNone(db.execute("SELECT vm_name FROM vm_ownership WHERE vm_name='reconcile-present'").fetchone())
+
+            stale = fail_create("reconcile-stale")
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                db.execute("UPDATE nodes SET inventory_seen=? WHERE id=?", (int(time.time())-181, node_id))
+                db.commit()
+            heartbeat_without_inventory = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={"provider": "hyperv"})
+            self.assertEqual(heartbeat_without_inventory.status_code, 200)
+            blocked_inventory = client.post(f"/api/admin/provisioning-jobs/{stale}/reconcile", headers=admin_headers,
+                                            json={"action": "confirm_absent"})
+            self.assertEqual(blocked_inventory.status_code, 409)
+            self.assertFalse(next(row for row in client.get("/api/admin/provisioning-jobs", headers=admin_headers).json()["items"] if row["id"] == stale)["can_reconcile"])
+            self.assertEqual(heartbeat([]).status_code, 200)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                db.execute("UPDATE nodes SET last_seen=? WHERE id=?", (int(time.time())-181, node_id))
+                db.commit()
+            blocked_heartbeat = client.post(f"/api/admin/provisioning-jobs/{stale}/reconcile", headers=admin_headers,
+                                            json={"action": "confirm_absent"})
+            self.assertEqual(blocked_heartbeat.status_code, 409)
 
     def test_customer_inventory_is_filtered_to_owned_vms_across_nodes(self):
         with TestClient(main.app) as client:

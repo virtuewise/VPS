@@ -110,11 +110,12 @@ async function loadAdminPanel() {
   for (const u of result.items) if (u.active) tokenOwner.add(new Option(`${u.username} (${u.role})`, String(u.id)));
   updateMcpScopeOptions();
   byId('users-content').innerHTML = result.items.map(u => '<div class="user-row" data-user-id="'+u.id+'"><b>'+escapeHtml(u.username)+'</b><select data-field="role"><option value="user" '+(u.role==='user'?'selected':'')+'>Customer</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrator</option></select><input data-field="quota" type="number" min="0" max="1000" value="'+u.vm_quota+'"><select data-field="active"><option value="true" '+(u.active?'selected':'')+'>Active</option><option value="false" '+(!u.active?'selected':'')+'>Suspended</option></select><button class="secondary" data-user-action="save">Save</button><button class="danger" data-user-action="delete" '+(u.id===currentUser.id?'disabled':'')+'>Delete</button></div>').join('') || '<p>No accounts yet.</p>';
-  const [log,tokens,nodes] = await Promise.all([api('/api/audit?limit=30'), api('/api/mcp/tokens'), api('/api/nodes')]);
+  const [log,tokens,nodes,recoveryJobs] = await Promise.all([api('/api/audit?limit=30'), api('/api/mcp/tokens'), api('/api/nodes'), api('/api/admin/provisioning-jobs')]);
   const networks = await api('/api/networks');
   byId('audit-content').innerHTML = log.items.map(e => '<div class="audit-row"><b>'+escapeHtml(e.action)+'</b> · '+escapeHtml(e.actor_username)+' · '+escapeHtml(e.target)+' <span class="muted">'+escapeHtml(e.created_at)+'</span></div>').join('') || 'No events recorded.';
   byId('mcp-tokens-content').innerHTML = tokens.items.map(t => '<div class="mcp-token-row"><div><b>'+escapeHtml(t.label)+'</b><span class="muted">'+escapeHtml(t.username)+' ? '+escapeHtml(t.scopes.join(', '))+' ? expires '+escapeHtml(new Date(t.expires_at*1000).toLocaleDateString())+'</span><span class="muted">'+(t.revoked_at?'Revoked':t.expires_at*1000<Date.now()?'Expired':'Active')+'</span></div><button type="button" class="danger" data-mcp-token-revoke="'+t.id+'" '+(t.revoked_at?'disabled':'')+'>Revoke</button></div>').join('') || 'No scoped MCP tokens issued.';
   byId('node-management-content').innerHTML = nodes.items.map(n => '<div class="mcp-token-row"><div><b>'+escapeHtml(n.name)+'</b><span class="muted">'+escapeHtml(n.hostname)+' ? '+escapeHtml(n.status)+' ? '+Number(n.vm_count||0)+' VMs ? last heartbeat '+escapeHtml(n.last_seen?new Date(n.last_seen*1000).toLocaleString():'never')+'</span></div><button type="button" class="danger" data-node-revoke="'+n.id+'" '+(n.status==='revoked'?'disabled':'')+'>Revoke</button></div>').join('') || 'No compute nodes enrolled.';
+  byId('provisioning-recovery-content').innerHTML=(recoveryJobs.items||[]).map(job=>`<div class="mcp-token-row"><div><b>${escapeHtml(job.vm_name)}</b><span class="muted">${escapeHtml(job.username)} | ${escapeHtml(job.node_name||`Node ${job.node_id}`)} | failed after ${Number(job.attempts)} attempt(s)</span><span class="muted">${escapeHtml(job.error||'No provider error recorded')} | heartbeat ${job.last_seen?escapeHtml(new Date(job.last_seen*1000).toLocaleString()):'never'} | VM inventory ${job.inventory_seen?escapeHtml(new Date(job.inventory_seen*1000).toLocaleString()):'never'} | updated ${escapeHtml(job.updated_at)}</span></div><div class="network-row-actions"><button type="button" class="secondary" data-job-reconcile="${escapeHtml(job.id)}" data-reconcile-action="confirm_present" ${job.can_reconcile?'':'disabled'}>Confirm VM exists</button><button type="button" class="danger" data-job-reconcile="${escapeHtml(job.id)}" data-reconcile-action="confirm_absent" ${job.can_reconcile?'':'disabled'}>Confirm VM absent</button></div></div>`).join('') || 'No unresolved node provisioning jobs.';
   const nodeSelect=byId('network-node'); nodeSelect.replaceChildren();
   for(const n of nodes.items) if(n.status==='online') { const option=new Option(`${n.name} (${n.resources?.provider||'unknown'})`,String(n.id)); option.dataset.provider=n.resources?.provider||''; option.dataset.capabilities=JSON.stringify(n.resources?.capabilities||[]); nodeSelect.add(option); }
   updateNetworkForm();
@@ -165,6 +166,15 @@ byId('network-form').addEventListener('submit', async event => {
   try { await api('/api/networks',{method:'POST',body:JSON.stringify(payload)}); notice('Virtual network created.'); form.elements.name.value=''; await loadAdminPanel(); await loadDashboard(); }
   catch(error){notice(error.message);}
 });
+byId('provisioning-recovery-content').addEventListener('click', async event => {
+  const button=event.target.closest('button[data-job-reconcile]'); if(!button||button.disabled)return;
+  const jobId=button.dataset.jobReconcile, action=button.dataset.reconcileAction;
+  const phrase=action==='confirm_present'?'confirm that the VM exists':'confirm that the VM is absent and release its ownership/quota reservation';
+  if(!confirm(`The control plane will verify the latest fresh inventory from the assigned node. Do you ${phrase}? This does not retry provisioning.`))return;
+  try { const result=await api(`/api/admin/provisioning-jobs/${encodeURIComponent(jobId)}/reconcile`,{method:'POST',body:JSON.stringify({action})}); notice(result.message); await loadAdminPanel(); await loadDashboard(); }
+  catch(error){notice(error.message);}
+});
+
 byId('networks-content').addEventListener('click', async event => {
   const assignButton=event.target.closest('button[data-network-assign]');
   if(assignButton && !assignButton.disabled) {
