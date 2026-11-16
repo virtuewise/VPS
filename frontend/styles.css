@@ -14,3 +14,16 @@
 .login-error{min-height:18px;color:#ff9aa8;font-size:13px}
 .topbar-actions{display:flex;align-items:center;gap:12px}
 @media(max-width:650px){.topbar-actions{align-items:flex-end;flex-direction:column;gap:7px}}
+
+.admin-panel[hidden]{display:none}
+.user-list{display:grid;gap:10px;margin-top:22px}
+.user-row{display:grid;grid-template-columns:minmax(130px,1.3fr) repeat(3,minmax(90px,.7fr)) auto;gap:10px;align-items:center;padding:14px 0;border-top:1px solid #26354c}
+.user-row strong{overflow-wrap:anywhere}
+.user-row select,.user-row input{min-width:0;width:100%;padding:9px;border:1px solid #354866;border-radius:7px;background:#0b1424;color:#e8edf7}
+.user-row .user-status{font-size:12px;color:#91a0b7}
+.user-actions{display:flex;gap:6px;flex-wrap:wrap}
+.ownership-transfer{border-top:1px solid #26354c;margin-top:22px;padding-top:18px}
+.ownership-transfer h4{margin:0 0 14px}
+.audit-list{display:grid;gap:8px;font-size:12px;color:#b8c5d9}
+.audit-row{padding:10px 0;border-top:1px solid #26354c;overflow-wrap:anywhere}
+@media(max-width:850px){.user-row{grid-template-columns:1fr 1fr}.user-actions{grid-column:1/-1}}
