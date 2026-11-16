@@ -63,6 +63,15 @@ class AccountApiTests(unittest.TestCase):
         self.assertTrue(any(item["name"] == "edge-one" and item["status"] == "online" for item in nodes.json()["items"]))
         admin_login = self.client.post("/api/auth/login", json={"username": "admin", "password": os.environ["VPS_ADMIN_PASSWORD"]})
         admin_headers = {"X-CSRF-Token": admin_login.json()["csrf_token"]}
+        rotated = self.client.post(f"/api/nodes/{node_id}/rotate-credential", headers=admin_headers)
+        self.assertEqual(rotated.status_code, 200, rotated.text)
+        replacement_token = rotated.json()["node_token"]
+        old_token_denied = self.client.post(f"/api/nodes/{node_id}/heartbeat",
+            headers={"Authorization": f"Bearer {node_token}"}, json={"provider": "libvirt"})
+        self.assertEqual(old_token_denied.status_code, 401)
+        new_token_accepted = self.client.post(f"/api/nodes/{node_id}/heartbeat",
+            headers={"Authorization": f"Bearer {replacement_token}"}, json={"provider": "libvirt"})
+        self.assertEqual(new_token_accepted.status_code, 200)
         revoked = self.client.post(f"/api/nodes/{node_id}/revoke", headers=admin_headers)
         self.assertEqual(revoked.status_code, 200)
         denied = self.client.post(f"/api/nodes/{node_id}/heartbeat",

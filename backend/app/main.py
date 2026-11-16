@@ -466,6 +466,23 @@ def node_heartbeat(node_id: int, request: Request, payload: dict[str, Any]) -> d
     return {"accepted": True, "node_id": node_id, "received_at": now}
 
 
+@app.post("/api/nodes/{node_id}/rotate-credential", tags=["nodes"])
+def rotate_node_credential(node_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Replace a node credential; the new secret is returned exactly once."""
+    token = secrets.token_urlsafe(48)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        cursor = connection.execute(
+            "UPDATE nodes SET token_hash=?,status='pending' WHERE id=? AND status!='revoked'",
+            (digest, node_id),
+        )
+        connection.commit()
+    if cursor.rowcount != 1:
+        raise HTTPException(status_code=404, detail="Active node not found.")
+    audit(DATABASE_PATH, admin, "node.credential_rotated", str(node_id))
+    return {"node_id": node_id, "node_token": token, "credential_note": "Store this token securely; it is shown only once. The previous token is now invalid."}
+
+
 @app.post("/api/nodes/{node_id}/revoke", tags=["nodes"])
 def revoke_node(node_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, bool]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
