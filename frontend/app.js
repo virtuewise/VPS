@@ -60,6 +60,7 @@ async function loadMonitor() {
   const target=byId("monitor-content");
   try {
     const m=await api("/api/monitor");
+    if(m.restricted){target.innerHTML=`<div class="empty">${escapeHtml(m.message||"Host metrics are administrator-only.")}</div>`;return;}
     const memUsed=Math.max(0,m.memory_total_mb-m.memory_free_mb), storageUsed=Math.max(0,m.storage_total_gb-m.storage_free_gb);
     const metrics=[
       ["Host CPU",`${m.cpu_percent}%`,m.cpu_percent],
@@ -117,7 +118,12 @@ async function loadAdminPanel() {
   const nodeSelect=byId('network-node'); nodeSelect.replaceChildren();
   for(const n of nodes.items) if(n.status==='online') { const option=new Option(`${n.name} (${n.resources?.provider||'unknown'})`,String(n.id)); option.dataset.provider=n.resources?.provider||''; option.dataset.capabilities=JSON.stringify(n.resources?.capabilities||[]); nodeSelect.add(option); }
   updateNetworkForm();
-  byId('networks-content').innerHTML=(networks.items||[]).map(n=>'<div class="mcp-token-row"><div><b>'+escapeHtml(n.name)+'</b><span class="muted">'+escapeHtml(n.node_name)+' ? '+escapeHtml(n.mode)+' ? '+escapeHtml(n.cidr||'no CIDR')+' ? '+escapeHtml(n.status)+'</span></div><button type="button" class="danger" data-network-delete="'+escapeHtml(n.name)+'" data-network-node="'+n.node_id+'" '+(!['active','missing'].includes(n.status)?'disabled':'')+'>'+(n.status==='missing'?'Forget record':'Delete')+'</button></div>').join('') || 'No VirtueWise-managed virtual networks.';
+  const customerOptions=result.items.filter(u=>u.active&&u.role==='user').map(u=>`<option value="${u.id}">${escapeHtml(u.username)}</option>`).join('');
+  byId('networks-content').innerHTML=(networks.items||[]).map(n=>{
+    const assignAction=n.assigned_user_id?`<span class="muted">Assigned to ${escapeHtml(n.assigned_username||'customer')}</span><button type="button" class="secondary" data-network-unassign data-network-node="${n.node_id}" data-network-name="${escapeHtml(n.name)}" >Unassign</button>`:`<select data-network-assign-user ${n.status!=='active'||!customerOptions?'disabled':''}><option value="">Assign to customer?</option>${customerOptions}</select><button type="button" class="secondary" data-network-assign data-network-node="${n.node_id}" data-network-name="${escapeHtml(n.name)}" ${n.status!=='active'||!customerOptions?'disabled':''}>Assign</button>`;
+    const deleteDisabled=n.status!=='active'&&n.status!=='missing'||Boolean(n.assigned_user_id);
+    return `<div class="mcp-token-row"><div><b>${escapeHtml(n.name)}</b><span class="muted">${escapeHtml(n.node_name)} | ${escapeHtml(n.mode)} | ${escapeHtml(n.cidr||'no CIDR')} | ${escapeHtml(n.status)}</span></div><div class="network-row-actions">${assignAction}<button type="button" class="danger" data-network-delete="${escapeHtml(n.name)}" data-network-node="${n.node_id}" ${deleteDisabled?'disabled':''}>${n.status==='missing'?'Forget record':'Delete'}</button></div></div>`;
+  }).join('') || 'No VirtueWise-managed virtual networks.';
 }
 
 async function loadDashboard() {
@@ -152,7 +158,6 @@ byId("create-vm-form").addEventListener("submit",async event=>{
 });
 byId('user-create-form').addEventListener('submit', async event => { event.preventDefault(); const f=event.currentTarget; if(!f.reportValidity()) return; const v=new FormData(f); try { await api('/api/users',{method:'POST',body:JSON.stringify({username:String(v.get('username')).trim(),password:String(v.get('password')),role:String(v.get('role')),vm_quota:Number(v.get('vm_quota'))})}); f.reset(); f.elements.vm_quota.value='3'; notice('Account created.'); await loadAdminPanel(); } catch(e) { notice(e.message); } });
 byId('users-content').addEventListener('click', async event => { const b=event.target.closest('button[data-user-action]'); if(!b) return; const row=b.closest('[data-user-id]'), id=Number(row.dataset.userId); try { if(b.dataset.userAction==='save') { await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify({role:row.querySelector('[data-field=role]').value,vm_quota:Number(row.querySelector('[data-field=quota]').value),active:row.querySelector('[data-field=active]').value==='true'})}); notice('Account updated.'); await loadAdminPanel(); } else if(confirm('Delete this account? Transfer its VMs first.')) { await api('/api/users/'+id,{method:'DELETE'}); notice('Account deleted.'); await loadAdminPanel(); } } catch(e) { notice(e.message); } });
-byId('node-enroll-form').addEventListener('submit', async event => {
 byId('network-form').addEventListener('submit', async event => {
   event.preventDefault(); const form=event.currentTarget; if(!form.reportValidity()) return;
   const values=new FormData(form), payload={node_id:Number(values.get('node_id')),name:String(values.get('name')).trim(),mode:String(values.get('mode')),cidr:String(values.get('cidr')||'').trim()||null};
@@ -161,13 +166,29 @@ byId('network-form').addEventListener('submit', async event => {
   catch(error){notice(error.message);}
 });
 byId('networks-content').addEventListener('click', async event => {
-  const button=event.target.closest('button[data-network-delete]'); if(!button || button.disabled)return;
-  const name=button.dataset.networkDelete, nodeId=button.dataset.networkNode;
+  const assignButton=event.target.closest('button[data-network-assign]');
+  if(assignButton && !assignButton.disabled) {
+    const row=assignButton.closest('.mcp-token-row'), select=row.querySelector('select[data-network-assign-user]');
+    const userId=Number(select?.value), nodeId=assignButton.dataset.networkNode, name=assignButton.dataset.networkName;
+    if(!Number.isSafeInteger(userId)||userId<1){notice('Choose a customer account first.');return;}
+    try { await api(`/api/networks/${nodeId}/${encodeURIComponent(name)}/assign`,{method:'POST',body:JSON.stringify({user_id:userId})}); notice('Network assigned to customer.'); await loadAdminPanel(); }
+    catch(error){notice(error.message);} return;
+  }
+  const unassignButton=event.target.closest('button[data-network-unassign]');
+  if(unassignButton && !unassignButton.disabled) {
+    const nodeId=unassignButton.dataset.networkNode, name=unassignButton.dataset.networkName;
+    if(!confirm(`Unassign ${name} from this customer? Existing attached VMs must be removed first.`))return;
+    try { await api(`/api/networks/${nodeId}/${encodeURIComponent(name)}/assign`,{method:'DELETE'}); notice('Network unassigned.'); await loadAdminPanel(); }
+    catch(error){notice(error.message);} return;
+  }
+  const deleteButton=event.target.closest('button[data-network-delete]'); if(!deleteButton || deleteButton.disabled)return;
+  const name=deleteButton.dataset.networkDelete, nodeId=deleteButton.dataset.networkNode;
   if(!confirm(`Delete or reconcile VirtueWise-managed network ${name}? Provider deletion is refused while any VM is attached.`))return;
   try { await api(`/api/networks/${nodeId}/${encodeURIComponent(name)}`,{method:'DELETE'}); notice('Virtual network deleted or reconciled.'); await loadAdminPanel(); await loadDashboard(); }
   catch(error){notice(error.message);}
 });
 
+byId('node-enroll-form').addEventListener('submit', async event => {
   event.preventDefault(); const form=event.currentTarget; if(!form.reportValidity()) return;
   const values=new FormData(form);
   try {

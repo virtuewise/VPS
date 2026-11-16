@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from contextlib import closing
 from pathlib import Path
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app import main
 
@@ -196,6 +197,85 @@ class MultiNodeTests(unittest.TestCase):
                 "name": "plugin-net", "mode": "isolated", "cidr": None
             })
 
+    def test_customer_network_assignment_scopes_switches_and_vm_attachments(self):
+        with TestClient(main.app) as client:
+            admin_headers = self._login(client)
+            node_id = self._enroll_live_node()
+            node_headers = {"Authorization": "Bearer " + self.node_token}
+            heartbeat = client.post(f"/api/nodes/{node_id}/heartbeat", headers=node_headers, json={
+                "provider": "libvirt", "agent_version": "test", "capabilities": ["inventory.read", "network.manage"],
+                "cpu_total": 8, "cpu_used": 0, "memory_total_mb": 32768, "memory_used_mb": 1024,
+                "storage_total_gb": 500, "storage_used_gb": 20, "inventory": [], "switches": [],
+            })
+            self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+            with patch("app.main.dispatch_node_command", new_callable=AsyncMock) as dispatch:
+                dispatch.return_value = {"name": "tenant-net", "created": True}
+                created = client.post("/api/networks", headers=admin_headers, json={
+                    "node_id": node_id, "name": "tenant-net", "mode": "isolated", "cidr": "192.168.90.0/24"
+                })
+            self.assertEqual(created.status_code, 200, created.text)
+            with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+                db.execute("UPDATE nodes SET switches_json=? WHERE id=?", (json.dumps([{"name": "tenant-net", "switch_type": "isolated"}]), node_id))
+                db.commit()
+            customer1 = client.post("/api/users", headers=admin_headers, json={
+                "username": "network-owner", "password": "network-owner-password-123", "role": "user", "vm_quota": 5
+            }).json()
+            customer2 = client.post("/api/users", headers=admin_headers, json={
+                "username": "other-owner", "password": "other-owner-password-123", "role": "user", "vm_quota": 5
+            }).json()
+            assigned = client.post(f"/api/networks/{node_id}/tenant-net/assign", headers=admin_headers,
+                                   json={"user_id": customer1["id"]})
+            self.assertEqual(assigned.status_code, 200, assigned.text)
+            blocked_delete = client.delete(f"/api/networks/{node_id}/tenant-net", headers=admin_headers)
+            self.assertEqual(blocked_delete.status_code, 409)
+            duplicate_assignment = client.post(f"/api/networks/{node_id}/tenant-net/assign", headers=admin_headers,
+                                               json={"user_id": customer2["id"]})
+            self.assertEqual(duplicate_assignment.status_code, 409)
+            network_list = client.get("/api/networks", headers=admin_headers).json()
+            self.assertEqual(network_list["items"][0]["assigned_username"], "network-owner")
+            login1 = client.post("/api/auth/login", json={"username": "network-owner", "password": "network-owner-password-123"})
+            customer1_headers = {"X-CSRF-Token": login1.json()["csrf_token"]}
+            switches1 = client.get("/api/switches", headers=customer1_headers).json()["items"]
+            login2 = client.post("/api/auth/login", json={"username": "other-owner", "password": "other-owner-password-123"})
+            customer2_headers = {"X-CSRF-Token": login2.json()["csrf_token"]}
+            switches2 = client.get("/api/switches", headers=customer2_headers).json()["items"]
+            self.assertEqual([item["name"] for item in switches1], ["tenant-net"])
+            self.assertEqual(switches1[0]["node_id"], node_id)
+            self.assertEqual(switches2, [])
+
+        customer_context = {"id": customer1["id"], "username": "network-owner", "role": "user"}
+        other_context = {"id": customer2["id"], "username": "other-owner", "role": "user"}
+        request = main.CreateVMRequest(name="tenant-vm", iso_path="/tmp/ubuntu.iso", memory_mb=1024,
+                                       disk_gb=10, cpu_count=1, switch_name="tenant-net", node_id=node_id)
+        accepted = main.create_vm(request, customer_context)
+        self.assertTrue(accepted["accepted"])
+        with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+            ownership = db.execute("SELECT node_id,network_name FROM vm_ownership WHERE vm_name='tenant-vm'").fetchone()
+        self.assertEqual(ownership, (node_id, "tenant-net"))
+        admin_context = {"id": 1, "username": "admin", "role": "admin"}
+        with self.assertRaises(HTTPException) as blocked_unassign:
+            main.unassign_network(node_id, "tenant-net", admin_context)
+        self.assertEqual(blocked_unassign.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as blocked_transfer:
+            main.transfer_vm_ownership(customer2["id"], "tenant-vm", admin_context)
+        self.assertEqual(blocked_transfer.exception.status_code, 409)
+        other_request = main.CreateVMRequest(name="other-tenant-vm", iso_path="/tmp/ubuntu.iso", memory_mb=1024,
+                                             disk_gb=10, cpu_count=1, switch_name="tenant-net", node_id=node_id)
+        with self.assertRaises(HTTPException) as blocked_other_customer:
+            main.create_vm(other_request, other_context)
+        self.assertEqual(blocked_other_customer.exception.status_code, 403)
+        with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+            db.execute("DELETE FROM vm_ownership WHERE vm_name='tenant-vm'")
+            db.commit()
+        unassigned = main.unassign_network(node_id, "tenant-net", admin_context)
+        self.assertTrue(unassigned["unassigned"])
+        main.assign_network(node_id, "tenant-net", main.NetworkAssignmentRequest(user_id=customer2["id"]), admin_context)
+        deleted_customer = main.delete_user(customer2["id"], admin_context)
+        self.assertTrue(deleted_customer["success"])
+        with closing(sqlite3.connect(main.DATABASE_PATH)) as db:
+            remaining_assignments = db.execute("SELECT COUNT(*) FROM tenant_network_assignments WHERE user_id=?", (customer2["id"],)).fetchone()[0]
+        self.assertEqual(remaining_assignments, 0)
+
     def test_customer_inventory_is_filtered_to_owned_vms_across_nodes(self):
         with TestClient(main.app) as client:
             admin_headers = self._login(client)
@@ -226,7 +306,7 @@ class MultiNodeTests(unittest.TestCase):
                 "name": "customer-vm", "iso_path": "C:\\ISO\\ubuntu.iso", "memory_mb": 1024,
                 "disk_gb": 10, "cpu_count": 1, "switch_name": "Default Switch"
             })
-            self.assertEqual(blocked_network_vm.status_code, 403, blocked_network_vm.text)
+            self.assertEqual(blocked_network_vm.status_code, 422, blocked_network_vm.text)
             inventory = client.get("/api/vms", headers=customer_headers)
             self.assertEqual(inventory.status_code, 200, inventory.text)
             self.assertEqual([item["name"] for item in inventory.json()["items"]], ["owned-vm"])

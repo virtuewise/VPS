@@ -92,6 +92,13 @@ def initialize_database() -> None:
             status TEXT NOT NULL CHECK(status IN ('provisioning','active','deleting')),
             created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(node_id,name))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS tenant_network_assignments (
+            node_id INTEGER NOT NULL, network_name TEXT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id), assigned_by INTEGER,
+            assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(node_id,network_name))""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_tenant_network_assignments_user ON tenant_network_assignments(user_id,node_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_vm_ownership_network ON vm_ownership(node_id,network_name)")
         connection.commit()
 
 
@@ -349,6 +356,10 @@ class CreateNetworkRequest(BaseModel):
     cidr: str | None = Field(default=None, max_length=32)
 
 
+class NetworkAssignmentRequest(BaseModel):
+    user_id: int = Field(ge=1)
+
+
 class NodeCommandCompleteRequest(BaseModel):
     status: str = Field(pattern=r"^(succeeded|failed)$")
     result: dict[str, Any] | None = None
@@ -495,11 +506,16 @@ def update_user(user_id: int, request: UserUpdateRequest, admin: dict[str, Any] 
 
 @app.post("/api/users/{user_id}/transfer-vm", tags=["users"])
 def transfer_vm_ownership(user_id: int, vm_name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-        user = connection.execute("SELECT id,username,active FROM users WHERE id=?", (user_id,)).fetchone()
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=10)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        user = connection.execute("SELECT id,username,active,role FROM users WHERE id=?", (user_id,)).fetchone()
         if not user or not user[2]: raise HTTPException(status_code=404, detail="Active destination user not found.")
-        vm = connection.execute("SELECT vm_name FROM vm_ownership WHERE vm_name=?", (vm_name,)).fetchone()
+        vm = connection.execute("SELECT vm_name,node_id,network_name FROM vm_ownership WHERE vm_name=?", (vm_name,)).fetchone()
         if not vm: raise HTTPException(status_code=404, detail="Owned VM record not found.")
+        if vm[2] and user[3] == "user":
+            assignment = connection.execute("SELECT 1 FROM tenant_network_assignments WHERE user_id=? AND node_id=? AND network_name=?", (user_id, vm[1], vm[2])).fetchone()
+            if not assignment:
+                raise HTTPException(status_code=409, detail="Destination customer is not assigned the VM's attached network.")
         connection.execute("UPDATE vm_ownership SET user_id=? WHERE vm_name=?", (user_id, vm_name))
         connection.commit()
     audit(DATABASE_PATH, admin, "vm.transfer", vm_name, f"new_owner={user[1]}")
@@ -516,6 +532,7 @@ def delete_user(user_id: int, admin: dict[str, Any] = Depends(require_admin)) ->
             raise HTTPException(status_code=400, detail="At least one active administrator must remain.")
         owned = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE user_id=?", (user_id,)).fetchone()[0]
         if owned: raise HTTPException(status_code=409, detail=f"Transfer or delete the user's {owned} VM ownership record(s) before deleting this account.")
+        connection.execute("DELETE FROM tenant_network_assignments WHERE user_id=?", (user_id,))
         connection.execute("DELETE FROM users WHERE id=?", (user_id,))
         connection.commit()
     audit(DATABASE_PATH, admin, "user.delete", target[0])
@@ -620,8 +637,14 @@ async def list_vms(user: dict[str, Any] = Depends(require_user)) -> dict[str, An
 
 @app.get("/api/switches", tags=["agent"])
 async def list_switches(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    assigned: set[tuple[int, str]] | None = None
     if user["role"] != "admin":
-        return {"items": []}
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            rows = connection.execute("""SELECT a.node_id,a.network_name FROM tenant_network_assignments a
+                JOIN managed_networks m ON m.node_id=a.node_id AND m.name=a.network_name
+                JOIN users u ON u.id=a.user_id AND u.active=1
+                WHERE a.user_id=? AND m.status='active'""", (user["id"],)).fetchall()
+        assigned = {(int(row[0]), str(row[1])) for row in rows}
     live = live_node_rows()
     if live:
         items: list[dict[str, Any]] = []
@@ -632,8 +655,11 @@ async def list_switches(user: dict[str, Any] = Depends(require_user)) -> dict[st
                 switches = json.loads(node["switches_json"] or "[]")
             except (ValueError, TypeError):
                 switches = []
-            items.extend({**item, "node_id": node["id"], "node_name": node["name"]} for item in switches if isinstance(item, dict))
+            items.extend({**item, "node_id": node["id"], "node_name": node["name"]} for item in switches
+                         if isinstance(item, dict) and (assigned is None or (int(node["id"]), str(item.get("name"))) in assigned))
         return {"items": items}
+    if user["role"] != "admin":
+        return {"items": []}
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         registered = connection.execute("SELECT COUNT(*) FROM nodes WHERE status!='revoked'").fetchone()[0]
     if registered:
@@ -641,8 +667,10 @@ async def list_switches(user: dict[str, Any] = Depends(require_user)) -> dict[st
     return await agent_request("GET", "/v1/switches")
 
 
-@app.get("/api/monitor", tags=["monitoring"], dependencies=[Depends(require_user)])
-async def get_monitor() -> dict[str, Any]:
+@app.get("/api/monitor", tags=["monitoring"])
+async def get_monitor(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if user["role"] != "admin":
+        return {"restricted": True, "message": "Host-level resource telemetry is administrator-only."}
     live = live_node_rows()
     if live:
         resources = []
@@ -672,8 +700,6 @@ async def get_monitor() -> dict[str, Any]:
 @app.post("/api/vms", tags=["instances"], status_code=202)
 def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     """Reserve customer quota and enqueue VM provisioning for the durable worker."""
-    if user["role"] != "admin" and request.switch_name is not None:
-        raise HTTPException(status_code=403, detail="Customer network attachment is disabled until tenant network assignments and firewall isolation are configured.")
     job_id = str(uuid.uuid4())
     with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
         connection.execute("PRAGMA busy_timeout=15000")
@@ -681,6 +707,36 @@ def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_u
         if connection.execute("SELECT 1 FROM vm_ownership WHERE vm_name=?", (request.name,)).fetchone():
             connection.rollback()
             raise HTTPException(status_code=409, detail="A VM with this name is already recorded.")
+        if request.switch_name is not None and request.node_id is None:
+            enrolled = connection.execute("SELECT COUNT(*) FROM nodes WHERE status!='revoked'").fetchone()[0]
+            if user["role"] != "admin" or enrolled or not agent_configured():
+                connection.rollback()
+                raise HTTPException(status_code=422, detail="A VM network attachment must identify its enrolled compute node.")
+        if user["role"] == "admin" and request.switch_name is not None:
+            managed = connection.execute("SELECT status FROM managed_networks WHERE node_id=? AND name=?", (request.node_id, request.switch_name)).fetchone()
+            if managed and managed[0] != "active":
+                connection.rollback()
+                raise HTTPException(status_code=409, detail="This managed network is not in an active state.")
+        if user["role"] != "admin" and request.switch_name is not None:
+            if request.node_id is None:
+                connection.rollback()
+                raise HTTPException(status_code=403, detail="A customer network attachment must identify its assigned compute node.")
+            assigned = connection.execute("""SELECT n.switches_json,n.switches_seen,n.status,m.status
+                FROM tenant_network_assignments a JOIN managed_networks m
+                ON m.node_id=a.node_id AND m.name=a.network_name
+                JOIN nodes n ON n.id=a.node_id
+                WHERE a.user_id=? AND a.node_id=? AND a.network_name=?""",
+                (user["id"], request.node_id, request.switch_name)).fetchone()
+            if not assigned or assigned[2] != "online" or assigned[3] != "active" or not assigned[1] or int(time.time()) - int(assigned[1]) > 180:
+                connection.rollback()
+                raise HTTPException(status_code=403, detail="This network is not assigned to your account on an online node.")
+            try:
+                reported = json.loads(assigned[0] or "[]")
+            except (ValueError, TypeError):
+                reported = []
+            if not any(isinstance(item, dict) and item.get("name") == request.switch_name for item in reported):
+                connection.rollback()
+                raise HTTPException(status_code=409, detail="Assigned network is not present in the latest provider inventory.")
         if user["role"] != "admin":
             limits = connection.execute("SELECT vm_quota,cpu_quota_cores,memory_quota_mb,storage_quota_gb FROM users WHERE id=? AND active=1", (user["id"],)).fetchone()
             if not limits:
@@ -697,7 +753,8 @@ def create_vm(request: CreateVMRequest, user: dict[str, Any] = Depends(require_u
         if not agent_configured() and not node_count:
             connection.rollback()
             raise HTTPException(status_code=503, detail="No node is enrolled and no legacy VPS_AGENT_URL/VPS_AGENT_TOKEN is configured.")
-        connection.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb) VALUES(?,?,?,?,?)", (request.name, user["id"], request.cpu_count, request.memory_mb, request.disk_gb))
+        connection.execute("INSERT INTO vm_ownership(vm_name,user_id,cpu_count,memory_mb,disk_gb,node_id,network_name) VALUES(?,?,?,?,?,?,?)",
+                           (request.name, user["id"], request.cpu_count, request.memory_mb, request.disk_gb, request.node_id, request.switch_name))
         connection.execute("INSERT INTO provisioning_jobs(id,user_id,vm_name,status,request_json) VALUES(?,?,?,'queued',?)", (job_id, user["id"], request.name, json.dumps(request.model_dump())))
         connection.commit()
     audit(DATABASE_PATH, user, "vm.provisioning_queued", request.name, f"job_id={job_id}")
@@ -985,7 +1042,7 @@ async def mcp_resources(context: dict[str, Any] = Depends(require_mcp_read_token
     require_mcp_scope(context, "resources.read")
     if context["role"] != "admin":
         raise HTTPException(status_code=403, detail="Host-wide resource telemetry is restricted to administrator-scoped MCP tokens.")
-    return await get_monitor()
+    return await get_monitor({"id": context["user_id"], "role": context["role"]})
 
 
 @app.post("/api/nodes/enrollment-tokens", tags=["nodes"])
@@ -1137,8 +1194,10 @@ def complete_node_command(node_id: int, command_id: str, request: Request,
 def list_managed_networks(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, list[dict[str, Any]]]:
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         rows = connection.execute("""SELECT m.node_id,n.name AS node_name,n.status AS node_status,n.last_seen,
-            n.switches_json,m.name,m.mode,m.cidr,m.status,m.created_at,n.switches_seen
-            FROM managed_networks m JOIN nodes n ON n.id=m.node_id ORDER BY n.name,m.name""").fetchall()
+            n.switches_json,m.name,m.mode,m.cidr,m.status,m.created_at,n.switches_seen,
+            a.user_id,u.username FROM managed_networks m JOIN nodes n ON n.id=m.node_id
+            LEFT JOIN tenant_network_assignments a ON a.node_id=m.node_id AND a.network_name=m.name
+            LEFT JOIN users u ON u.id=a.user_id ORDER BY n.name,m.name""").fetchall()
     now = int(time.time())
     items = []
     for row in rows:
@@ -1166,7 +1225,8 @@ def list_managed_networks(admin: dict[str, Any] = Depends(require_admin)) -> dic
         elif status == "active" and not present:
             status = "missing"
         items.append({"node_id": row[0], "node_name": row[1], "name": row[5], "mode": row[6],
-                      "cidr": row[7], "status": status, "present": present, "created_at": row[9]})
+                      "cidr": row[7], "status": status, "present": present, "created_at": row[9],
+                      "assigned_user_id": row[11], "assigned_username": row[12]})
     return {"items": items}
 
 
@@ -1220,33 +1280,46 @@ async def create_network(request: CreateNetworkRequest, admin: dict[str, Any] = 
 async def delete_network(node_id: int, name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,62}", name):
         raise HTTPException(status_code=422, detail="Invalid virtual network name.")
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=15)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         node = connection.execute("SELECT status,last_seen,switches_json,switches_seen FROM nodes WHERE id=? AND status!='revoked'", (node_id,)).fetchone()
         network = connection.execute("SELECT status FROM managed_networks WHERE node_id=? AND name=?", (node_id, name)).fetchone()
-    if not network:
-        raise HTTPException(status_code=404, detail="VirtueWise-managed network not found.")
-    if network[0] != "active":
-        raise HTTPException(status_code=409, detail=f"Network cannot be deleted while its recorded state is {network[0]}.")
-    if not node or node[0] != "online" or not node[1] or int(time.time()) - int(node[1]) > 180:
-        raise HTTPException(status_code=409, detail="Selected node is offline or has a stale heartbeat.")
-    if not node[3] or int(time.time()) - int(node[3]) > 180:
-        raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a successful switches heartbeat.")
-    try:
-        reported_switches = json.loads(node[2] or "[]")
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a valid heartbeat.") from None
-    present = any(isinstance(item, dict) and item.get("name") == name for item in reported_switches)
-    if not present:
-        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        if not network:
+            connection.rollback()
+            raise HTTPException(status_code=404, detail="VirtueWise-managed network not found.")
+        if network[0] != "active":
+            connection.rollback()
+            raise HTTPException(status_code=409, detail=f"Network cannot be deleted while its recorded state is {network[0]}.")
+        assignment = connection.execute("SELECT user_id FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name)).fetchone()
+        if assignment:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Unassign this network from its customer before deleting it.")
+        attached = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE network_name=? AND (node_id=? OR node_id IS NULL)", (name, node_id)).fetchone()[0]
+        if attached:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Network is referenced by one or more VM ownership records; delete or detach those VMs first.")
+        if not node or node[0] != "online" or not node[1] or int(time.time()) - int(node[1]) > 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Selected node is offline or has a stale heartbeat.")
+        if not node[3] or int(time.time()) - int(node[3]) > 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a successful switches heartbeat.")
+        try:
+            reported_switches = json.loads(node[2] or "[]")
+        except (ValueError, TypeError):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Cannot verify the node's latest network inventory; retry after a valid heartbeat.") from None
+        present = any(isinstance(item, dict) and item.get("name") == name for item in reported_switches)
+        if not present:
             connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=? AND status='active'", (node_id, name))
             connection.commit()
-        audit(DATABASE_PATH, admin, "network.forget", name, f"node_id={node_id}; absent from fresh provider inventory")
-        return {"forgotten": True, "name": name, "node_id": node_id}
-    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            audit(DATABASE_PATH, admin, "network.forget", name, f"node_id={node_id}; absent from fresh provider inventory")
+            return {"forgotten": True, "name": name, "node_id": node_id}
         cursor = connection.execute("UPDATE managed_networks SET status='deleting' WHERE node_id=? AND name=? AND status='active'", (node_id, name))
-        connection.commit()
         if cursor.rowcount != 1:
+            connection.rollback()
             raise HTTPException(status_code=409, detail="Network state changed; refresh the network list and retry.")
+        connection.commit()
     try:
         result = await dispatch_node_command(node_id, admin["id"], "network.delete", {"name": name})
     except HTTPException as exc:
@@ -1256,10 +1329,63 @@ async def delete_network(node_id: int, name: str, admin: dict[str, Any] = Depend
                 connection.commit()
         raise
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        connection.execute("DELETE FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name))
         connection.execute("DELETE FROM managed_networks WHERE node_id=? AND name=?", (node_id, name))
         connection.commit()
     audit(DATABASE_PATH, admin, "network.delete", name, f"node_id={node_id}")
     return result
+
+
+@app.post("/api/networks/{node_id}/{name}/assign", tags=["networks"])
+def assign_network(node_id: int, name: str, request: NetworkAssignmentRequest,
+                   admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=10)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        network = connection.execute("SELECT status FROM managed_networks WHERE node_id=? AND name=?", (node_id, name)).fetchone()
+        node = connection.execute("SELECT status,last_seen,switches_json,switches_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
+        customer = connection.execute("SELECT username,active,role FROM users WHERE id=?", (request.user_id,)).fetchone()
+        if not network or network[0] != "active":
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Only an active VirtueWise-managed network can be assigned.")
+        if not customer or not customer[1] or customer[2] != "user":
+            connection.rollback()
+            raise HTTPException(status_code=404, detail="Active customer account not found.")
+        if not node or node[0] != "online" or not node[1] or int(time.time())-int(node[1]) > 180 or not node[3] or int(time.time())-int(node[3]) > 180:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Network node or its switch inventory is offline or stale.")
+        try:
+            switches = json.loads(node[2] or "[]")
+        except (ValueError, TypeError):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Cannot verify current network inventory.") from None
+        if not any(isinstance(item, dict) and item.get("name") == name for item in switches):
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Network is not present in the latest provider inventory.")
+        existing = connection.execute("SELECT user_id FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name)).fetchone()
+        if existing and existing[0] != request.user_id:
+            connection.rollback()
+            raise HTTPException(status_code=409, detail="Network is already assigned to another customer; unassign it first.")
+        connection.execute("INSERT OR IGNORE INTO tenant_network_assignments(node_id,network_name,user_id,assigned_by) VALUES(?,?,?,?)",
+                            (node_id, name, request.user_id, admin["id"]))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "network.assign", name, f"node_id={node_id}; customer_id={request.user_id}")
+    return {"node_id": node_id, "network_name": name, "user_id": request.user_id, "username": customer[0]}
+
+
+@app.delete("/api/networks/{node_id}/{name}/assign", tags=["networks"])
+def unassign_network(node_id: int, name: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=10)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assignment = connection.execute("SELECT user_id FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name)).fetchone()
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Network assignment not found.")
+        attached = connection.execute("SELECT COUNT(*) FROM vm_ownership WHERE network_name=? AND (node_id=? OR node_id IS NULL)", (name, node_id)).fetchone()[0]
+        if attached:
+            raise HTTPException(status_code=409, detail="Network cannot be unassigned while customer VMs remain attached. Delete or detach those VMs first.")
+        connection.execute("DELETE FROM tenant_network_assignments WHERE node_id=? AND network_name=?", (node_id, name))
+        connection.commit()
+    audit(DATABASE_PATH, admin, "network.unassign", name, f"node_id={node_id}; customer_id={assignment[0]}")
+    return {"node_id": node_id, "network_name": name, "unassigned": True}
 
 
 @app.post("/api/nodes/{node_id}/rotate-credential", tags=["nodes"])

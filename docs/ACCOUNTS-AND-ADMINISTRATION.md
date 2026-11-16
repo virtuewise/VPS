@@ -58,3 +58,8 @@ cd backend
 ```
 
 The integration test exercises administrator login, CSRF enforcement, account creation, customer role isolation, VM-count quota rejection, account suspension, deletion safeguards, audit access and sign-in throttling. It uses a temporary SQLite database and does not contact a Hyper-V host.
+
+
+## Tenant network access
+
+Administrators assign each managed network to one customer at a time from the network-management panel. Customer sessions can list and attach VMs only to their assigned networks; the control plane stores the network and node association on VM ownership records. Unassignment is refused while any VM remains attached, and ownership transfer is refused unless the destination customer has the same network assignment. This is a control-plane authorization boundary; host-level resource telemetry is administrator-only. Complete host firewall policies, public-IP routing and independent network security review are still outstanding.

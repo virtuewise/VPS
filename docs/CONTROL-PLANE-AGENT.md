@@ -55,7 +55,7 @@ The agent periodically sends authenticated CPU, memory, storage, provider, VM in
 - `POST /api/nodes/{node_id}/commands/claim`
 - `POST /api/nodes/{node_id}/commands/{command_id}/complete`
 
-The command vocabulary is finite and typed: `vm.create`, `vm.start`, `vm.stop`, `vm.delete`, `vm.console`, `network.create` and `network.delete`. There is no arbitrary shell, Python expression or command-execution endpoint. The agent refreshes VM and virtual-switch inventory after successful commands. Administrator network operations are exposed in the dashboard. Hyper-V creates private isolated switches only; it does not configure DHCP, NAT or IPAM. libvirt supports isolated DHCP networks and NAT/DHCP networks with administrator-supplied non-overlapping IPv4 CIDRs. A network cannot be deleted while a VM NIC is attached; built-in default networks are protected. Switch inventory must be fresh before a network can be created or reconciled. Customer accounts cannot enumerate host switches or attach arbitrary host networks until tenant network assignments and firewall isolation are implemented.
+The command vocabulary is finite and typed: `vm.create`, `vm.start`, `vm.stop`, `vm.delete`, `vm.console`, `network.create` and `network.delete`. There is no arbitrary shell, Python expression or command-execution endpoint. The agent refreshes VM and virtual-switch inventory after successful commands. Administrator network operations are exposed in the dashboard. Hyper-V creates private isolated switches only; it does not configure DHCP, NAT or IPAM. libvirt supports isolated DHCP networks and NAT/DHCP networks with administrator-supplied non-overlapping IPv4 CIDRs. A network cannot be deleted while a VM NIC is attached; built-in default networks are protected. Switch inventory must be fresh before a network can be created or reconciled. Administrators can assign each managed network to one customer at a time. Customer sessions see only their assigned networks and can attach VMs only to an assigned network on its reporting node. Assignments cannot be removed while VMs remain attached; ownership transfers require the destination customer to hold the same assignment. Arbitrary unmanaged host switches remain administrator-only. These controls provide assignment-level isolation, not a substitute for host firewall rules or independent network security review.
 
 ## 4. Scheduling and provisioning
 
@@ -72,3 +72,8 @@ The dashboard aggregates VM inventory, virtual switches and host monitoring from
 - Real-host Hyper-V and libvirt certification, mTLS, distributed queue leases, automatic credential rotation, and operator reconciliation workflows remain outstanding.
 - Heartbeats older than 180 seconds are not eligible for new placements.
 - Resource telemetry must be complete; missing values fail scheduling closed.
+
+
+### Tenant network assignment API
+
+Administrators assign an active managed network to a customer with `POST /api/networks/{node_id}/{name}/assign` and JSON `{"user_id": 123}`. Remove the assignment with `DELETE /api/networks/{node_id}/{name}/assign`; this is refused while any VM ownership record still references that network. Each node/network pair can belong to only one customer. Customer `GET /api/switches` returns only assigned active networks. When provisioning a connected VM, the customer must submit both the selected `node_id` and `switch_name`; the control plane checks assignment and fresh provider inventory inside the same transaction that reserves quota and creates the VM record.

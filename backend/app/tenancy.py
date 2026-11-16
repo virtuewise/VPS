@@ -47,7 +47,7 @@ def initialize_tenancy(path: Path, admin_password: str, default_quota: int = 3) 
             if column not in user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")
         ownership_columns = {row[1] for row in db.execute("PRAGMA table_info(vm_ownership)").fetchall()}
-        for column, declaration in (("cpu_count", "INTEGER NOT NULL DEFAULT 1"), ("memory_mb", "INTEGER NOT NULL DEFAULT 512"), ("disk_gb", "INTEGER NOT NULL DEFAULT 8"), ("node_id", "INTEGER")):
+        for column, declaration in (("cpu_count", "INTEGER NOT NULL DEFAULT 1"), ("memory_mb", "INTEGER NOT NULL DEFAULT 512"), ("disk_gb", "INTEGER NOT NULL DEFAULT 8"), ("node_id", "INTEGER"), ("network_name", "TEXT")):
             if column not in ownership_columns:
                 db.execute(f"ALTER TABLE vm_ownership ADD COLUMN {column} {declaration}")
         db.execute("""CREATE TABLE IF NOT EXISTS provisioning_jobs (
